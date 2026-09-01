@@ -1,0 +1,23 @@
+{
+  "name": "heal-dental-hospital",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "prisma generate && prisma migrate deploy && next build",
+    "start": "next start",
+    "lint": "next lint",
+    "db:migrate": "prisma migrate dev",
+    "db:studio": "prisma studio"
+  },
+  "dependencies": {
+    "next": "15.5.25",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "@prisma/client": "6.19.3",
+    "marked": "^18.0.11"
+  },
+  "devDependencies": {
+    "prisma": "6.19.3"
+  }
+}
