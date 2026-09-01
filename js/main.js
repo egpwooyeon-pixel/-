@@ -1,20 +1,8 @@
-// 벨르피부성형외과 - main.js
+// 연세힐치과병원 (HEAL DENTAL HOSPITAL) - main.js
 
 document.addEventListener("DOMContentLoaded", () => {
-  const header = document.getElementById("header");
   const hamburger = document.getElementById("hamburger");
   const mobileMenu = document.getElementById("mobileMenu");
-
-  // Header background on scroll
-  const onScroll = () => {
-    if (window.scrollY > 20) {
-      header.classList.add("is-scrolled");
-    } else {
-      header.classList.remove("is-scrolled");
-    }
-  };
-  onScroll();
-  window.addEventListener("scroll", onScroll);
 
   // Mobile menu toggle
   hamburger.addEventListener("click", () => {
@@ -25,9 +13,43 @@ document.addEventListener("DOMContentLoaded", () => {
     link.addEventListener("click", () => mobileMenu.classList.remove("is-open"));
   });
 
+  // Hero slider
+  const slides = Array.from(document.querySelectorAll(".hero__slide"));
+  const dotsWrap = document.getElementById("heroDots");
+  let current = slides.findIndex((s) => s.classList.contains("is-active"));
+  if (current < 0) current = 0;
+
+  slides.forEach((_, i) => {
+    const dot = document.createElement("button");
+    dot.type = "button";
+    dot.setAttribute("aria-label", `${i + 1}번째 배너로 이동`);
+    if (i === current) dot.classList.add("is-active");
+    dot.addEventListener("click", () => goToSlide(i));
+    dotsWrap.appendChild(dot);
+  });
+
+  function goToSlide(index) {
+    slides[current].classList.remove("is-active");
+    dotsWrap.children[current].classList.remove("is-active");
+    current = index;
+    slides[current].classList.add("is-active");
+    dotsWrap.children[current].classList.add("is-active");
+  }
+
+  let sliderTimer = setInterval(() => {
+    goToSlide((current + 1) % slides.length);
+  }, 5000);
+
+  dotsWrap.addEventListener("click", () => {
+    clearInterval(sliderTimer);
+    sliderTimer = setInterval(() => {
+      goToSlide((current + 1) % slides.length);
+    }, 5000);
+  });
+
   // Scroll reveal animation
   const revealTargets = document.querySelectorAll(
-    ".card, .t-card, .doc-card, .booking-form, .location__info"
+    ".card, .t-card, .doctor-card, .review-card, .booking-form, .location__info"
   );
   revealTargets.forEach((el) => el.classList.add("reveal"));
 
