@@ -17,6 +17,7 @@ const POSTS = [
     headline: "정품 · 정량\n시술",
     brand: "M I L I",
     gradient: "linear-gradient(150deg, #2b2420 0%, #171310 100%)",
+    href: "https://blog.naver.com/dosan_miliclinic/224354515014",
   },
   {
     tag: "밀리클리닉",
@@ -88,10 +89,16 @@ export default function MilliClinicPage() {
             <span className={styles.logoWord}>밀리클리닉</span>
           </a>
           <div className={styles.navLinks}>
-            <a href="#">홈페이지</a>
-            <a href="#">블로그</a>
+            <a href="https://dosan.miliclinic.co.kr/" target="_blank" rel="noopener noreferrer">홈페이지</a>
+            <a href="https://blog.naver.com/dosan_miliclinic" target="_blank" rel="noopener noreferrer">블로그</a>
             <a href="#">카카오톡</a>
-            <a href="#">문의하기</a>
+            <a
+              href="https://map.naver.com/p/search/%EB%B0%80%EB%A6%AC%EB%8F%84%EC%82%B0%EA%B3%B5%EC%9B%90/place/1635689178"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              문의하기
+            </a>
           </div>
         </div>
       </nav>
@@ -110,7 +117,13 @@ export default function MilliClinicPage() {
           <div className={styles.grid}>
             {POSTS.map((post) => (
               <article className={styles.card} key={post.title}>
-                <a href="#" className={styles.thumb} style={{ background: post.gradient }}>
+                <a
+                  href={post.href || "#"}
+                  target={post.href ? "_blank" : undefined}
+                  rel={post.href ? "noopener noreferrer" : undefined}
+                  className={styles.thumb}
+                  style={{ background: post.gradient }}
+                >
                   <span className={styles.thumbTag}>{post.thumbTag}</span>
                   <p className={styles.thumbHeadline}>
                     {post.headline.split("\n").map((line, i) => (
@@ -124,7 +137,14 @@ export default function MilliClinicPage() {
                 </a>
 
                 <span className={styles.cardTag}>{post.tag}</span>
-                <a href="#" className={styles.cardTitle}>{post.title}</a>
+                <a
+                  href={post.href || "#"}
+                  target={post.href ? "_blank" : undefined}
+                  rel={post.href ? "noopener noreferrer" : undefined}
+                  className={styles.cardTitle}
+                >
+                  {post.title}
+                </a>
                 <p className={styles.cardMeta}>{post.meta}</p>
                 <p className={styles.cardExcerpt}>{post.excerpt}</p>
               </article>
