@@ -42,17 +42,24 @@
   height: 64px;
 }
 .logo {
-  display: grid;
-  grid-template-columns: repeat(2, 7px);
-  grid-template-rows: repeat(2, 7px);
-  gap: 3px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--mc-accent);
 }
-.logo span {
-  width: 7px;
-  height: 7px;
-  background: var(--mc-ink);
-  border-radius: 1px;
-  transform: rotate(45deg);
+.logo svg {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+}
+.logoWord {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--mc-ink);
+  letter-spacing: -0.2px;
+}
+@media (max-width: 480px) {
+  .logoWord { display: none; }
 }
 .navLinks {
   display: flex;
