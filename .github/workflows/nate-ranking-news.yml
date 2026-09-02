@@ -1,0 +1,28 @@
+name: Nate 랭킹뉴스 매일 메일 발송
+
+on:
+  schedule:
+    # UTC 00:00 = KST 09:00. GitHub 스케줄은 부하에 따라 최대 십수 분 지연될 수 있다.
+    - cron: "0 0 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  send-ranking-news:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Fetch Nate ranking news and send email
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: npm run news:nate
