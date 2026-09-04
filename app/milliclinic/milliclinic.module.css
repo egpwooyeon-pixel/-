@@ -317,3 +317,39 @@
 .postBody p:last-child {
   margin-bottom: 0;
 }
+.postBody h1,
+.postBody h2,
+.postBody h3 {
+  margin: 32px 0 14px;
+  font-weight: 800;
+  line-height: 1.4;
+}
+.postBody h2 { font-size: 21px; }
+.postBody h3 { font-size: 17px; }
+.postBody img {
+  max-width: 100%;
+  border-radius: 8px;
+  margin: 24px 0;
+}
+.postBody ul,
+.postBody ol {
+  margin: 0 0 20px;
+  padding-left: 22px;
+}
+.postBody li { margin-bottom: 6px; }
+.postBody a {
+  color: var(--mc-accent);
+  text-decoration: underline;
+}
+.postBody blockquote {
+  margin: 24px 0;
+  padding: 4px 20px;
+  border-left: 3px solid var(--mc-accent);
+  color: var(--mc-ink-soft);
+}
+
+.empty {
+  text-align: center;
+  padding: 80px 20px;
+  color: var(--mc-ink-soft);
+}

@@ -11,7 +11,6 @@ export default function MilliHeader() {
             <text x="17" y="15.5" textAnchor="middle" fontFamily="'IBM Plex Sans KR','Pretendard',sans-serif" fontSize="6.6" fontWeight="700" letterSpacing="1.6" fill="#fff">M I L I</text>
             <text x="17" y="24" textAnchor="middle" fontFamily="'IBM Plex Sans KR','Pretendard',sans-serif" fontSize="5.6" fontWeight="600" letterSpacing="1" fill="#fff">CLINIC</text>
           </svg>
-          <span className={styles.logoWord}>밀리클리닉</span>
         </Link>
         <div className={styles.navLinks}>
           <a href="https://dosan.miliclinic.co.kr/" target="_blank" rel="noopener noreferrer">홈페이지</a>

@@ -1,17 +1,21 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { marked } from "marked";
 import styles from "../milliclinic.module.css";
 import MilliHeader from "../Header";
 import MilliFooter from "../Footer";
-import { POSTS, getPost } from "../posts";
+import { prisma } from "@/lib/db";
 
-export function generateStaticParams() {
-  return POSTS.map((p) => ({ slug: p.slug }));
+export const dynamic = "force-dynamic";
+
+function formatDate(date) {
+  const d = new Date(date);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 export async function generateMetadata({ params }) {
   const { slug } = await params;
-  const post = getPost(slug);
+  const post = await prisma.milliPost.findUnique({ where: { slug } });
   if (!post) return {};
   return {
     title: `${post.title} | MILI CLINIC`,
@@ -21,8 +25,8 @@ export async function generateMetadata({ params }) {
 
 export default async function MilliClinicPostPage({ params }) {
   const { slug } = await params;
-  const post = getPost(slug);
-  if (!post) notFound();
+  const post = await prisma.milliPost.findUnique({ where: { slug } });
+  if (!post || !post.published) notFound();
 
   return (
     <div className={styles.page}>
@@ -34,16 +38,17 @@ export default async function MilliClinicPostPage({ params }) {
 
           <span className={styles.postTag}>{post.tag}</span>
           <h1 className={styles.postTitle}>{post.title}</h1>
-          <p className={styles.postMeta}>{post.meta}</p>
+          <p className={styles.postMeta}>{post.author} / {formatDate(post.createdAt)}</p>
 
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={post.image} alt="" className={styles.postImage} />
+          {post.image && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={post.image} alt="" className={styles.postImage} />
+          )}
 
-          <div className={styles.postBody}>
-            {post.body.map((paragraph, i) => (
-              <p key={i}>{paragraph}</p>
-            ))}
-          </div>
+          <div
+            className={styles.postBody}
+            dangerouslySetInnerHTML={{ __html: marked.parse(post.content) }}
+          />
         </div>
       </main>
 
