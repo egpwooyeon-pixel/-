@@ -30,9 +30,11 @@ export default function MilliClinicPage() {
             {POSTS.map((post) => (
               <article className={styles.card} key={post.slug}>
                 <Link href={`/milliclinic/${post.slug}`} className={styles.thumb}>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={post.image} alt="" className={styles.thumbImg} />
-                  <span className={styles.thumbTag}>{post.thumbTag}</span>
+                  {post.image && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={post.image} alt="" className={styles.thumbImg} />
+                  )}
+                  <span className={styles.thumbTag}>{post.tag}</span>
                   <p className={styles.thumbHeadline}>
                     {post.headline.split("\n").map((line, i, arr) => (
                       <span key={i}>

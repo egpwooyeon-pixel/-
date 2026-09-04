@@ -123,7 +123,7 @@
 
 .thumb {
   position: relative;
-  aspect-ratio: 4 / 3;
+  aspect-ratio: 1 / 1;
   border-radius: 4px;
   overflow: hidden;
   margin-bottom: 16px;
@@ -132,6 +132,7 @@
   justify-content: flex-end;
   padding: 20px;
   isolation: isolate;
+  background: linear-gradient(155deg, #8a4652 0%, #362026 100%);
 }
 .thumbImg {
   position: absolute;
@@ -300,7 +301,7 @@
 .postImage {
   width: 100%;
   max-width: 860px;
-  aspect-ratio: 4 / 3;
+  aspect-ratio: 1 / 1;
   object-fit: cover;
   border-radius: 6px;
   margin-bottom: 36px;
@@ -346,6 +347,46 @@
   padding: 4px 20px;
   border-left: 3px solid var(--mc-accent);
   color: var(--mc-ink-soft);
+}
+
+.priceBlock {
+  margin: 0 0 28px;
+  border: 1px solid var(--mc-line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.priceSection {
+  background: var(--mc-accent);
+  color: #fff;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 10px 14px;
+}
+.priceRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--mc-line);
+  font-size: 14.5px;
+}
+.priceRow:last-child { border-bottom: none; }
+.priceRow span { color: var(--mc-ink); line-height: 1.5; }
+.priceRow strong {
+  flex-shrink: 0;
+  color: var(--mc-accent);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.priceNote {
+  margin: 0;
+  padding: 10px 16px;
+  font-size: 12.5px;
+  color: var(--mc-ink-soft);
+  background: var(--mc-bg-alt, #f4f4f4);
 }
 
 .empty {
