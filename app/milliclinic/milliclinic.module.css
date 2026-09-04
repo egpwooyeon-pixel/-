@@ -45,12 +45,12 @@
   display: flex;
   align-items: center;
   gap: 9px;
-  color: var(--mc-accent);
 }
 .logo svg {
-  width: 26px;
-  height: 26px;
+  width: 32px;
+  height: 32px;
   flex-shrink: 0;
+  border-radius: 4px;
 }
 .logoWord {
   font-size: 15px;

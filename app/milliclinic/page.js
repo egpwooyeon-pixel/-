@@ -82,9 +82,10 @@ export default function MilliClinicPage() {
       <nav className={styles.nav}>
         <div className={`${styles.container} ${styles.navInner}`}>
           <a href="#" className={styles.logo} aria-label="밀리클리닉">
-            <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
-              <circle cx="16" cy="16" r="14.6" stroke="currentColor" strokeWidth="1.3" />
-              <path d="M9.5 21V11.2L16 17.6l6.5-6.4V21" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+            <svg viewBox="0 0 34 34" aria-hidden="true">
+              <rect width="34" height="34" rx="4" fill="#2b2a4d" />
+              <text x="17" y="15.5" textAnchor="middle" fontFamily="'IBM Plex Sans KR','Pretendard',sans-serif" fontSize="6.6" fontWeight="700" letterSpacing="1.6" fill="#fff">M I L I</text>
+              <text x="17" y="24" textAnchor="middle" fontFamily="'IBM Plex Sans KR','Pretendard',sans-serif" fontSize="5.6" fontWeight="600" letterSpacing="1" fill="#fff">CLINIC</text>
             </svg>
             <span className={styles.logoWord}>밀리클리닉</span>
           </a>
