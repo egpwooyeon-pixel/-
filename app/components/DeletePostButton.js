@@ -2,10 +2,10 @@
 
 import { deletePostAction } from "@/lib/actions";
 
-export default function DeletePostButton({ postId, action = deletePostAction }) {
+export default function DeletePostButton({ postId }) {
   return (
     <form
-      action={action.bind(null, postId)}
+      action={deletePostAction.bind(null, postId)}
       onSubmit={(e) => {
         if (!confirm("정말 이 글을 삭제하시겠습니까? 되돌릴 수 없습니다.")) {
           e.preventDefault();

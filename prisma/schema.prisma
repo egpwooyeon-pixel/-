@@ -20,18 +20,3 @@ model Post {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
-
-model MilliPost {
-  id        Int      @id @default(autoincrement())
-  title     String
-  slug      String   @unique
-  tag       String   @default("밀리클리닉")
-  excerpt   String
-  headline  String   @default("")
-  content   String
-  image     String?
-  author    String   @default("admin")
-  published Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
