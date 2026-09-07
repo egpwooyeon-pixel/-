@@ -4,8 +4,13 @@
 상품명·가격·평점·리뷰수·링크를 추출해 CSV/JSON으로 저장하는 스크립트입니다
 (`scraper.py`). 추가로 검색 상위 N개 상품의 **상세페이지까지 들어가 판매자
 정보(상호/대표자, 주소, 이메일, 연락처, 사업자번호 등)를 모아 구글
-스프레드시트에 업로드**하는 스크립트도 포함되어 있습니다 (`seller_info_scraper.py`
-+ `sheets_uploader.py`).
+스프레드시트에 업로드**하는 스크립트도 포함되어 있습니다:
+
+- `auto_browse.py` — 실제 브라우저(Chromium)를 띄워 사람이 검색하고 하나씩
+  클릭해서 확인하는 과정을 그대로 자동화. 이어하기(resume) 지원. **권장.**
+- `seller_info_scraper.py` — requests 기반의 더 가벼운 대안 (이어하기 미지원)
+- `sheets_uploader.py` — 위 두 스크립트가 모은 데이터를 구글 스프레드시트에
+  업로드하는 공용 모듈 (단독 CLI로도 사용 가능)
 
 ## 먼저 읽어주세요 (중요)
 
@@ -75,6 +80,36 @@ python3 scraper.py "컴퓨터책상" --debug-html
 
 ## 판매자 정보 수집 + 구글 스프레드시트 업로드
 
+두 가지 방식이 있습니다. 실제 브라우저를 띄워 "사람이 검색하고 클릭하는 것"을
+그대로 흉내 내는 **`auto_browse.py`**를 우선 권장합니다.
+
+### 방식 A (권장): 실제 브라우저 자동화 — `auto_browse.py`
+
+```bash
+pip install playwright
+playwright install chromium
+
+# 1) 소규모로 먼저 테스트 (상위 5개, 브라우저 창이 뜨는 걸 직접 볼 수 있음)
+python3 auto_browse.py "컴퓨터책상" --limit 5
+
+# 2) 문제 없으면 개수를 늘려 실행 (최대 100)
+python3 auto_browse.py "컴퓨터책상" --limit 100
+
+# 창 없이 백그라운드로 돌리고 싶으면
+python3 auto_browse.py "컴퓨터책상" --limit 100 --headless
+```
+
+- 검색 → 상위 N개 링크 수집 → 상세페이지 방문 → "배송/교환/반품 안내" 탭 자동
+  클릭 → 판매자 정보 추출까지 한 번에 처리합니다.
+- **이어하기(resume) 지원**: 같은 키워드로 다시 실행하면 이미 처리된 상품은
+  건너뛰고 새 상품만 이어서 처리합니다. 중간에 창을 닫거나 오류가 나도, 그때까지
+  처리한 결과는 매 건마다 CSV/JSON에 즉시 저장되어 있으므로 처음부터 다시
+  돌릴 필요가 없습니다. "계속 반복 실행" 용도에 맞춰져 있습니다.
+- 브라우저 창이 화면에 보이는 채로 동작하므로(기본값), 실제로 잘 진행되고
+  있는지 눈으로 확인하면서 쓸 수 있습니다.
+
+### 방식 B: requests 기반 (빠르지만 JS 렌더링 페이지엔 약함) — `seller_info_scraper.py`
+
 ```bash
 # 1) 소규모로 먼저 테스트 (상위 5개만)
 python3 seller_info_scraper.py "컴퓨터책상" --limit 5
@@ -86,6 +121,8 @@ python3 seller_info_scraper.py "컴퓨터책상" --limit 100 --min-delay 3 --max
 #    (사전에: pip install playwright && playwright install chromium)
 python3 seller_info_scraper.py "컴퓨터책상" --limit 10 --engine playwright
 ```
+
+이 방식은 "이어하기(resume)" 기능이 없어 매번 처음부터 다시 수집합니다.
 
 결과는 항상 `output/<키워드>_판매자정보.csv` / `.json`으로 먼저 저장됩니다
 (구글 시트 업로드가 실패해도 데이터가 유실되지 않도록).
@@ -106,6 +143,12 @@ python3 seller_info_scraper.py "컴퓨터책상" --limit 10 --engine playwright
 설정 후에는 크롤링과 동시에 업로드:
 
 ```bash
+python3 auto_browse.py "컴퓨터책상" --limit 20 \
+    --sheet-id "1AbCDEFghijklmnopqrstuvwxyz0123456789" \
+    --worksheet "시트1" \
+    --creds service_account.json
+
+# 또는 seller_info_scraper.py도 동일한 옵션을 지원합니다
 python3 seller_info_scraper.py "컴퓨터책상" --limit 20 \
     --sheet-id "1AbCDEFghijklmnopqrstuvwxyz0123456789" \
     --worksheet "시트1" \
@@ -131,6 +174,9 @@ python3 sheets_uploader.py --csv "output/컴퓨터책상_판매자정보.csv" \
 
 ## 참고: 실행 환경 관련
 
-이 스크립트는 클라우드 실행 환경(샌드박스)에서는 네트워크 정책상
+이 스크립트들은 클라우드 실행 환경(샌드박스)에서는 네트워크 정책상
 `coupang.com`으로의 외부 접속이 차단되어 있어 그 환경에서는 직접 실행/검증할
-수 없었습니다. 로컬 PC(또는 접속이 허용된 환경)에서 실행해 주세요.
+수 없었습니다(코드 로직 자체는 로컬 mock 데이터로 검증했습니다). **반드시
+본인 PC(또는 접속이 허용된 환경)에서 실행해 주세요.** 특히 `auto_browse.py`는
+실제 브라우저 창을 띄우는 방식이라 GUI가 있는 로컬 환경이 필요합니다
+(`--headless` 옵션을 쓰면 창 없이도 실행 가능).

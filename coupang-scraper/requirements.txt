@@ -3,5 +3,6 @@ beautifulsoup4>=4.12
 lxml>=5.0
 gspread>=6.0
 google-auth>=2.29
-# 아래는 seller_info_scraper.py --engine playwright 를 쓸 때만 필요
-# playwright>=1.44
+# auto_browse.py(브라우저 자동화) 및 seller_info_scraper.py --engine playwright 사용 시 필요
+# 설치 후 반드시 `playwright install chromium` 한 번 실행해야 합니다.
+playwright>=1.44
