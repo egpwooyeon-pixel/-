@@ -1,24 +1,43 @@
 # 쿠팡 검색 결과 크롤러 (개인 학습용)
 
 `requests` + `BeautifulSoup`으로 쿠팡(coupang.com) 검색 결과 페이지에서
-상품명·가격·평점·리뷰수·링크를 추출해 CSV/JSON으로 저장하는 스크립트입니다.
+상품명·가격·평점·리뷰수·링크를 추출해 CSV/JSON으로 저장하는 스크립트입니다
+(`scraper.py`). 추가로 검색 상위 N개 상품의 **상세페이지까지 들어가 판매자
+정보(상호/대표자, 주소, 이메일, 연락처, 사업자번호 등)를 모아 구글
+스프레드시트에 업로드**하는 스크립트도 포함되어 있습니다 (`seller_info_scraper.py`
++ `sheets_uploader.py`).
 
 ## 먼저 읽어주세요 (중요)
 
 - 쿠팡의 robots.txt와 이용약관은 자동화된 데이터 수집을 제한하고 있는 것으로
-  보입니다. 이 도구는 **개인 학습 / 개인용 가격 확인** 목적의 저빈도 사용을
-  전제로 만들었습니다. 상업적 이용, 대량/고빈도 수집, 차단 우회(캡차 자동 풀이,
-  프록시 로테이션 등) 목적으로 개조해서 쓰지 마세요.
+  보입니다. 이 도구는 **개인 학습 / 개인용 확인** 목적의 저빈도 사용을 전제로
+  만들었습니다. 대량/고빈도 수집, 차단 우회(캡차 자동 풀이, 프록시 로테이션
+  등) 목적으로 개조해서 쓰지 마세요.
+- `seller_info_scraper.py`는 상품 상세페이지를 **여러 건 순차 방문**하므로
+  `scraper.py` 단독 사용보다 요청 수가 훨씬 많습니다. 처음에는 반드시
+  `--limit 5`~`10` 정도로 작게 테스트한 뒤 늘리세요. `--limit`은 코드에서
+  최대 100으로 강제 제한됩니다.
+- 판매자 정보(상호/대표자/주소/이메일/전화/사업자번호)는 전자상거래법상
+  **공개 고지 의무**가 있는 정보라 수집 자체는 비공개 개인정보 탈취와는
+  다릅니다. 하지만 이 연락처로 **사전 동의 없이 광고성 메시지(영업 제안 등)를
+  보내는 것**은 정보통신망법 제50조(영리목적 광고성 정보 전송 제한) 등 별도
+  규제 대상이 될 수 있습니다 — 스크래핑의 적법성과는 별개 문제이니, 실제
+  영업 연락 전에는 법률 검토를 권장합니다.
 - 403/429 응답이나 보안 확인 페이지가 뜨면 스크립트가 즉시 중단됩니다. 이는
   정상 동작이며, 이 시점에서 우회를 시도하지 말고 잠시 후 다시 시도하거나
   사용을 멈추세요.
 - 쿠팡 페이지의 HTML 구조(class 이름)는 예고 없이 바뀔 수 있습니다.
   `scraper.py` 상단의 `SELECTORS` 값은 공개된 자료를 참고한 시작점이며, 실제
   실행 시점의 페이지와 다를 수 있습니다. 상품이 0건으로 나오면 아래
-  "선택자가 안 맞을 때" 항목을 참고하세요.
+  "선택자가 안 맞을 때" 항목을 참고하세요. `seller_info_scraper.py`의 판매자
+  정보 추출은 class 이름이 아니라 화면에 보이는 라벨 텍스트("상호/대표자",
+  "사업장 소재지" 등)를 기준으로 찾으므로 상대적으로 더 안정적이지만, 판매자
+  정보 표 자체가 JavaScript로 늦게 렌더링되는 페이지라면 `--engine playwright`
+  옵션이 필요할 수 있습니다.
 - 지속적으로 안정적인 데이터가 필요하다면 [쿠팡파트너스 오픈 API](https://developers.coupangcorp.com)
-  (상품검색 API) 사용을 더 권장합니다. 이 스크립트는 API로 얻기 어려운 필드를
-  소규모로 확인해야 할 때 보조 수단으로 쓰는 용도에 가깝습니다.
+  (상품검색 API) 사용을 더 권장합니다. 다만 파트너스 API는 상품 검색용이며
+  판매자 사업자정보까지는 제공하지 않는 것으로 보이므로(미검증), 판매자
+  정보가 꼭 필요하다면 이 스크립트가 유일한 방법에 가깝습니다.
 
 ## 설치
 
@@ -53,6 +72,55 @@ python3 scraper.py "컴퓨터책상" --debug-html
 3. `scraper.py` 상단의 `SELECTORS` 딕셔너리 값(`item_class_prefix`, `name`,
    `price`, `rating`, `rating_count`, `thumbnail`)을 실제 class 이름에 맞게
    수정합니다.
+
+## 판매자 정보 수집 + 구글 스프레드시트 업로드
+
+```bash
+# 1) 소규모로 먼저 테스트 (상위 5개만)
+python3 seller_info_scraper.py "컴퓨터책상" --limit 5
+
+# 2) 문제 없으면 개수를 늘려 실행 (최대 100)
+python3 seller_info_scraper.py "컴퓨터책상" --limit 100 --min-delay 3 --max-delay 6
+
+# 3) 판매자정보가 비어 있으면 브라우저 렌더링 방식으로 재시도
+#    (사전에: pip install playwright && playwright install chromium)
+python3 seller_info_scraper.py "컴퓨터책상" --limit 10 --engine playwright
+```
+
+결과는 항상 `output/<키워드>_판매자정보.csv` / `.json`으로 먼저 저장됩니다
+(구글 시트 업로드가 실패해도 데이터가 유실되지 않도록).
+
+### 구글 스프레드시트 연동 설정 (최초 1회)
+
+1. [Google Cloud Console](https://console.cloud.google.com)에서 프로젝트 생성
+2. "API 및 서비스 > 라이브러리"에서 **Google Sheets API**, **Google Drive API** 활성화
+3. "IAM 및 관리자 > 서비스 계정"에서 서비스 계정 생성
+4. 생성한 서비스 계정 → "키" 탭 → "키 추가" → JSON → 다운로드한 파일을
+   `coupang-scraper/service_account.json`으로 저장 (경로는 `--creds`로 변경 가능)
+5. 업로드할 구글 스프레드시트를 열어 **공유** 버튼으로 서비스 계정 이메일
+   (JSON 파일 안 `client_email` 값, `...@...iam.gserviceaccount.com` 형태)을
+   **편집자**로 추가
+6. 스프레드시트 URL `https://docs.google.com/spreadsheets/d/<이 부분>/edit`에서
+   `<이 부분>`이 스프레드시트 ID입니다.
+
+설정 후에는 크롤링과 동시에 업로드:
+
+```bash
+python3 seller_info_scraper.py "컴퓨터책상" --limit 20 \
+    --sheet-id "1AbCDEFghijklmnopqrstuvwxyz0123456789" \
+    --worksheet "시트1" \
+    --creds service_account.json
+```
+
+이미 저장된 CSV만 따로 업로드하려면:
+
+```bash
+python3 sheets_uploader.py --csv "output/컴퓨터책상_판매자정보.csv" \
+    --sheet-id "스프레드시트ID" --worksheet "시트1" --creds service_account.json
+```
+
+`service_account.json`은 비밀키이므로 절대 git 저장소에 커밋하거나 공유하지
+마세요 (`.gitignore`에 이미 등록되어 있습니다).
 
 ## 이 코드가 하지 않는 것
 
