@@ -5,7 +5,7 @@ export default function MilliHeader() {
   return (
     <nav className={styles.nav}>
       <div className={`${styles.container} ${styles.navInner}`}>
-        <Link href="/milliclinic" className={styles.logo} aria-label="밀리클리닉">
+        <Link href="/" className={styles.logo} aria-label="밀리클리닉">
           <svg viewBox="0 0 34 34" aria-hidden="true">
             <rect width="34" height="34" rx="4" fill="#2b2a4d" />
             <text x="17" y="15.5" textAnchor="middle" fontFamily="'IBM Plex Sans KR','Pretendard',sans-serif" fontSize="6.6" fontWeight="700" letterSpacing="1.6" fill="#fff">M I L I</text>

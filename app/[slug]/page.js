@@ -88,7 +88,7 @@ export default async function MilliClinicPostPage({ params }) {
 
       <main className={styles.postMain}>
         <div className={styles.container}>
-          <Link href="/milliclinic" className={styles.postBack}>← 목록으로</Link>
+          <Link href="/" className={styles.postBack}>← 목록으로</Link>
 
           <span className={styles.postTag}>{post.tag}</span>
           <h1 className={styles.postTitle}>{post.title}</h1>
