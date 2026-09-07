@@ -1,19 +1,16 @@
-import { POSTS as MILLI_POSTS } from "./milliclinic/posts";
+import { POSTS } from "./posts";
 
 const BASE_URL = process.env.NEXT_PUBLIC_SITE_URL || "https://project-2-10f6.vercel.app";
 
 export default function sitemap() {
   const now = new Date();
 
-  const staticRoutes = ["", "/blog", "/milliclinic"].map((path) => ({
-    url: `${BASE_URL}${path}`,
+  const homeRoute = { url: BASE_URL, lastModified: now };
+
+  const postRoutes = POSTS.map((post) => ({
+    url: `${BASE_URL}/${post.slug}`,
     lastModified: now,
   }));
 
-  const milliRoutes = MILLI_POSTS.map((post) => ({
-    url: `${BASE_URL}/milliclinic/${post.slug}`,
-    lastModified: now,
-  }));
-
-  return [...staticRoutes, ...milliRoutes];
+  return [homeRoute, ...postRoutes];
 }
