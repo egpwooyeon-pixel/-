@@ -1,13 +1,3 @@
-const FIELD_DEFS = [
-  { key: "sellerName", labels: ["상호/대표자", "상호 / 대표자", "상호명/대표자", "상호"] },
-  { key: "address", labels: ["사업장 소재지", "소재지"] },
-  { key: "email", labels: ["e-mail", "E-mail", "이메일"] },
-  { key: "phone", labels: ["연락처"] },
-  { key: "mailOrderNo", labels: ["통신판매업 신고번호", "통신판매업신고번호"] },
-  { key: "bizRegNo", labels: ["사업자번호", "사업자등록번호"] },
-  { key: "safetyService", labels: ["구매안전서비스"] },
-];
-
 const CSV_COLUMNS = [
   { key: "capturedAt", header: "캡처일시" },
   { key: "sellerName", header: "상호/대표자" },
@@ -21,71 +11,10 @@ const CSV_COLUMNS = [
   { key: "pageUrl", header: "상품 URL" },
 ];
 
-// Runs inside the target page via chrome.scripting.executeScript.
-// Must be self-contained: no references to outer scope.
-function extractCoupangSellerInfo() {
-  const norm = (s) => s.replace(/\s+/g, "");
-
-  const labelMap = [
-    { key: "sellerName", labels: ["상호/대표자", "상호 / 대표자", "상호명/대표자", "상호"] },
-    { key: "address", labels: ["사업장 소재지", "소재지"] },
-    { key: "email", labels: ["e-mail", "E-mail", "이메일"] },
-    { key: "phone", labels: ["연락처"] },
-    { key: "mailOrderNo", labels: ["통신판매업 신고번호", "통신판매업신고번호"] },
-    { key: "bizRegNo", labels: ["사업자번호", "사업자등록번호"] },
-    { key: "safetyService", labels: ["구매안전서비스"] },
-  ];
-
-  const bodyText = document.body ? document.body.innerText || document.body.textContent || "" : "";
-  const lines = bodyText
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
-
-  let startIdx = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (norm(lines[i]) === "판매자정보") startIdx = i;
-  }
-  if (startIdx === -1) return { success: false, reason: "not_found" };
-
-  const windowLines = lines.slice(startIdx, startIdx + 60);
-  const isAnyLabel = (line) =>
-    labelMap.some((e) => e.labels.some((l) => norm(line) === norm(l)));
-
-  const result = {};
-  for (let i = 0; i < windowLines.length; i++) {
-    const line = windowLines[i];
-    for (const entry of labelMap) {
-      if (result[entry.key]) continue;
-      if (entry.labels.some((l) => norm(line) === norm(l))) {
-        for (let j = i + 1; j < windowLines.length; j++) {
-          const candidate = windowLines[j];
-          if (candidate.length > 0 && !isAnyLabel(candidate)) {
-            result[entry.key] = candidate;
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  if (Object.keys(result).length === 0) return { success: false, reason: "no_fields" };
-
-  return {
-    success: true,
-    data: {
-      sellerName: result.sellerName || "",
-      address: result.address || "",
-      email: result.email || "",
-      phone: result.phone || "",
-      mailOrderNo: result.mailOrderNo || "",
-      bizRegNo: result.bizRegNo || "",
-      safetyService: result.safetyService || "",
-      productTitle: document.title || "",
-      pageUrl: location.href,
-    },
-  };
-}
+// extractCoupangSellerInfo, clickShippingTabIfPresent and
+// findProductLinksOnListingPage are defined in shared.js (loaded
+// before this file in popup.html) so both the popup and the
+// background service worker use the same extraction logic.
 
 function setStatus(message, type) {
   const el = document.getElementById("status");
@@ -249,11 +178,95 @@ async function handleClear() {
   setStatus("전체 삭제했습니다.", "ok");
 }
 
+function renderBatchStatus(status) {
+  const progressEl = document.getElementById("batchProgress");
+  const barWrap = document.getElementById("progressBar");
+  const barFill = document.getElementById("progressBarFill");
+  const startBtn = document.getElementById("batchStartBtn");
+
+  if (!status || (!status.running && !status.total)) {
+    progressEl.textContent = "";
+    barWrap.classList.remove("active");
+    startBtn.disabled = false;
+    return;
+  }
+
+  const pct = status.total > 0 ? Math.round((status.done / status.total) * 100) : 0;
+  barWrap.classList.add("active");
+  barFill.style.width = `${pct}%`;
+  startBtn.disabled = !!status.running;
+
+  if (status.running) {
+    progressEl.innerHTML = `<b>${status.done} / ${status.total}</b> 캡처 중... ${status.currentTitle ? "(" + status.currentTitle.slice(0, 24) + ")" : ""}`;
+  } else if (status.error === "no_links_found") {
+    progressEl.textContent = "이 페이지에서 상품 링크를 찾지 못했습니다. 쿠팡 검색/카테고리 목록 페이지에서 사용해주세요.";
+  } else if (status.error === "listing_read_failed") {
+    progressEl.textContent = "목록 페이지를 읽는 데 실패했습니다. 페이지를 새로고침한 뒤 다시 시도해주세요.";
+  } else if (status.total > 0) {
+    const failedText = status.failed > 0 ? `, 실패 ${status.failed}건` : "";
+    progressEl.innerHTML = `완료: <b>${status.done}</b> / ${status.total}건 처리${failedText}`;
+  }
+}
+
+async function handleBatchStart() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !tab.id) {
+    setStatus("현재 탭을 확인할 수 없습니다.", "error");
+    return;
+  }
+  if (!tab.url || !/coupang\.com/i.test(tab.url)) {
+    setStatus("쿠팡 검색/카테고리 목록 페이지에서 사용해주세요.", "error");
+    return;
+  }
+
+  let previewLinks = [];
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: findProductLinksOnListingPage,
+    });
+    previewLinks = (results && results[0] && results[0].result) || [];
+  } catch (err) {
+    setStatus("페이지를 읽는 데 실패했습니다. 새로고침 후 다시 시도해주세요.", "error");
+    return;
+  }
+
+  if (previewLinks.length === 0) {
+    setStatus("이 페이지에서 상품 링크를 찾지 못했습니다.", "error");
+    return;
+  }
+
+  const count = Math.min(previewLinks.length, 30);
+  const ok = window.confirm(
+    `상품 ${count}개를 순서대로 열어 판매자정보를 자동 캡처합니다.\n상품당 약 2~3초가 걸리며, 팝업을 닫아도 계속 진행됩니다.\n시작할까요?`
+  );
+  if (!ok) return;
+
+  await chrome.runtime.sendMessage({ type: "START_BATCH", sourceTabId: tab.id });
+  setStatus("자동 캡처를 시작했습니다.", "ok");
+}
+
+async function handleBatchStop() {
+  await chrome.storage.local.set({ batchCancelRequested: true });
+  setStatus("중지 요청을 보냈습니다. 진행 중인 상품까지 마치고 멈춥니다.", "");
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
   const records = await getRecords();
   renderList(records);
 
+  const { batchStatus } = await chrome.storage.local.get("batchStatus");
+  renderBatchStatus(batchStatus);
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local") return;
+    if (changes.batchStatus) renderBatchStatus(changes.batchStatus.newValue);
+    if (changes.records) renderList(Array.isArray(changes.records.newValue) ? changes.records.newValue : []);
+  });
+
   document.getElementById("captureBtn").addEventListener("click", handleCapture);
   document.getElementById("downloadBtn").addEventListener("click", handleDownload);
   document.getElementById("clearBtn").addEventListener("click", handleClear);
+  document.getElementById("batchStartBtn").addEventListener("click", handleBatchStart);
+  document.getElementById("batchStopBtn").addEventListener("click", handleBatchStop);
 });

@@ -102,18 +102,80 @@
     text-align: center;
     color: #9ca3af;
   }
+  hr {
+    border: none;
+    border-top: 1px solid #e5e7eb;
+    margin: 12px 0;
+  }
+  .section-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #374151;
+    margin-bottom: 6px;
+  }
+  .section-desc {
+    font-size: 11px;
+    color: #9ca3af;
+    margin-bottom: 8px;
+  }
+  #batchStartBtn {
+    background: #7c3aed;
+    color: #fff;
+  }
+  #batchStartBtn:hover { background: #6d28d9; }
+  #batchStartBtn:disabled { background: #c4b5fd; cursor: not-allowed; }
+  #batchStopBtn {
+    background: #f3f4f6;
+    color: #374151;
+    border: 1px solid #e5e7eb;
+  }
+  #batchProgress {
+    font-size: 12px;
+    color: #4b5563;
+    margin: 4px 0 8px;
+    min-height: 16px;
+  }
+  #batchProgress b { color: #111827; }
+  .progress-bar {
+    height: 6px;
+    background: #ede9fe;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 8px;
+    display: none;
+  }
+  .progress-bar.active { display: block; }
+  .progress-bar-fill {
+    height: 100%;
+    background: #7c3aed;
+    width: 0%;
+    transition: width 0.2s ease;
+  }
 </style>
 </head>
 <body>
   <h1>쿠팡 판매자정보 캡처</h1>
   <button id="captureBtn">이 페이지에서 판매자정보 캡처</button>
   <div id="status"></div>
+
+  <hr />
+  <div class="section-title">상품목록 자동 캡처</div>
+  <div class="section-desc">쿠팡 검색/카테고리 목록 페이지에서 사용하세요. 화면에 보이는 상품을 순서대로 열어 판매자정보를 자동 캡처합니다. (최대 30개)</div>
+  <div class="row-buttons">
+    <button id="batchStartBtn">자동 캡처 시작</button>
+    <button id="batchStopBtn">중지</button>
+  </div>
+  <div class="progress-bar" id="progressBar"><div class="progress-bar-fill" id="progressBarFill"></div></div>
+  <div id="batchProgress"></div>
+
+  <hr />
   <div class="count">저장된 항목: <b id="countNum">0</b>건</div>
   <div class="row-buttons">
     <button id="downloadBtn">CSV 다운로드</button>
     <button id="clearBtn">전체 삭제</button>
   </div>
   <div id="list"></div>
+  <script src="shared.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
