@@ -15,8 +15,8 @@
   "commands": {
     "capture-current-page": {
       "suggested_key": {
-        "default": "Ctrl+Shift+C",
-        "mac": "Command+Shift+C"
+        "default": "Alt+Shift+K",
+        "mac": "Alt+Shift+K"
       },
       "description": "현재 쿠팡 상품페이지의 판매자정보 즉시 캡처"
     }

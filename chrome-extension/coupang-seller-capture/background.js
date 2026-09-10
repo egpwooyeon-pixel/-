@@ -202,6 +202,87 @@ async function processOneProduct(url, keyword) {
   }
 }
 
+// Extracts seller info from a tab that's already loaded — no
+// navigation, no new request beyond the in-page "배송/교환/반품
+// 안내" click if the info isn't showing yet. Used by both the
+// keyboard-shortcut single capture and the "capture all open tabs"
+// feature below.
+async function extractFromTab(tabId) {
+  const tryOnce = async () => {
+    const r = await chrome.scripting.executeScript({ target: { tabId }, func: extractCoupangSellerInfo });
+    return r && r[0] && r[0].result;
+  };
+  let result = await tryOnce();
+  if (result && !result.success && result.reason === "not_found") {
+    await chrome.scripting.executeScript({ target: { tabId }, func: clickShippingTabIfPresent });
+    await delay(600);
+    result = await tryOnce();
+  }
+  return result;
+}
+
+const PRODUCT_URL_PATTERN = /\/vp\/products\/\d+/;
+
+async function findOpenProductTabs() {
+  const tabs = await chrome.tabs.query({ url: "*://www.coupang.com/*" });
+  return tabs.filter((t) => t.url && PRODUCT_URL_PATTERN.test(t.url));
+}
+
+// Reads seller info out of tabs the user already has open (opened by
+// their own clicks, not created by this extension) instead of
+// creating any new navigation. No new HTTP requests originate from
+// this extension here, so it carries essentially none of the
+// request-pattern risk the auto-navigating batch modes do.
+async function captureOpenTabs() {
+  isRunning = true;
+  cancelRequested = false;
+  stopReason = "";
+
+  const tabs = await findOpenProductTabs();
+
+  await setBatchStatus({
+    running: true,
+    mode: "open-tabs",
+    total: tabs.length,
+    done: 0,
+    failed: 0,
+    currentTitle: "",
+    error: "",
+    startedAt: Date.now(),
+  });
+
+  if (tabs.length === 0) {
+    isRunning = false;
+    await setBatchStatus({ running: false, error: "no_open_tabs" });
+    return;
+  }
+
+  for (let i = 0; i < tabs.length; i++) {
+    if (cancelRequested) break;
+    const tab = tabs[i];
+
+    if (await checkBlockedOnTab(tab.id)) {
+      markBlocked();
+      break;
+    }
+
+    const result = await extractFromTab(tab.id);
+    const status = await getBatchStatus();
+    if (result && result.success) {
+      await appendRecord({ ...result.data, keyword: "", capturedAt: formatDateTime(new Date()) });
+      await setBatchStatus({ done: status.done + 1, currentTitle: result.data.productTitle });
+    } else {
+      await setBatchStatus({ done: status.done + 1, failed: status.failed + 1 });
+    }
+
+    if (cancelRequested) break;
+    if (i < tabs.length - 1) await delayWithJitter(1200, 0.5);
+  }
+
+  isRunning = false;
+  await setBatchStatus({ running: false, error: stopReason });
+}
+
 async function startBatch(sourceTabId) {
   isRunning = true;
   cancelRequested = false;
@@ -351,6 +432,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ ok: true });
     return false;
   }
+  if (message && message.type === "CAPTURE_OPEN_TABS") {
+    if (isRunning) {
+      sendResponse({ ok: false, reason: "already_running" });
+      return false;
+    }
+    captureOpenTabs();
+    sendResponse({ ok: true });
+    return false;
+  }
   if (message && message.type === "STOP_BATCH") {
     cancelRequested = true;
     stopReason = "cancelled";
@@ -383,20 +473,8 @@ chrome.commands.onCommand.addListener(async (command) => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab || !tab.id) return;
 
-  const tryExtract = () =>
-    chrome.scripting
-      .executeScript({ target: { tabId: tab.id }, func: extractCoupangSellerInfo })
-      .then((res) => res && res[0] && res[0].result)
-      .catch(() => null);
-
   try {
-    let result = await tryExtract();
-    if (result && !result.success && result.reason === "not_found") {
-      // Seller info tab probably isn't open yet — try clicking it once.
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: clickShippingTabIfPresent });
-      await delay(500);
-      result = await tryExtract();
-    }
+    const result = await extractFromTab(tab.id);
 
     if (result && result.success) {
       await appendRecord({ ...result.data, keyword: "", capturedAt: formatDateTime(new Date()) });

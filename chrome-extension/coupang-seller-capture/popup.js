@@ -185,6 +185,7 @@ function renderBatchStatus(status) {
   const barFill = document.getElementById("progressBarFill");
   const startBtn = document.getElementById("batchStartBtn");
   const keywordStartBtn = document.getElementById("keywordStartBtn");
+  const openTabsBtn = document.getElementById("captureOpenTabsBtn");
 
   const hasContent = status && (status.running || status.total > 0 || status.keywordTotal > 0);
   if (!hasContent) {
@@ -192,6 +193,7 @@ function renderBatchStatus(status) {
     barWrap.classList.remove("active");
     startBtn.disabled = false;
     keywordStartBtn.disabled = false;
+    openTabsBtn.disabled = false;
     return;
   }
 
@@ -201,6 +203,7 @@ function renderBatchStatus(status) {
   barFill.style.width = `${pct}%`;
   startBtn.disabled = !!status.running;
   keywordStartBtn.disabled = !!status.running;
+  openTabsBtn.disabled = !!status.running;
 
   const titleSuffix = status.currentTitle ? " (" + status.currentTitle.slice(0, 22) + ")" : "";
 
@@ -214,6 +217,8 @@ function renderBatchStatus(status) {
     progressEl.textContent = "목록 페이지를 읽는 데 실패했습니다. 페이지를 새로고침한 뒤 다시 시도해주세요.";
   } else if (status.error === "no_keywords") {
     progressEl.textContent = "입력된 키워드가 없습니다.";
+  } else if (status.error === "no_open_tabs") {
+    progressEl.textContent = "열려있는 쿠팡 상품 탭을 찾지 못했습니다. 상품페이지를 몇 개 열어두고 다시 시도해주세요.";
   } else if (status.error === "interrupted") {
     const doneText = isKeywordMode ? `키워드 ${status.keywordDone} / ${status.keywordTotal}` : `${status.done} / ${status.total}건`;
     progressEl.innerHTML = `크롬이 확장프로그램을 잠시 재시작해 작업이 중단됐습니다 (<b>${doneText}</b>까지 저장됨). 필요하면 다시 시작해주세요.`;
@@ -229,6 +234,28 @@ function renderBatchStatus(status) {
     const failedText = status.failed > 0 ? `, 실패 ${status.failed}건` : "";
     progressEl.innerHTML = `완료: <b>${status.done}</b> / ${status.total}건 처리${failedText}`;
   }
+}
+
+async function handleCaptureOpenTabs() {
+  const tabs = await chrome.tabs.query({ url: "*://www.coupang.com/*" });
+  const productTabs = tabs.filter((t) => t.url && /\/vp\/products\/\d+/.test(t.url));
+
+  if (productTabs.length === 0) {
+    setStatus("열려있는 쿠팡 상품 탭을 찾지 못했습니다. 상품페이지를 몇 개 열어두고 다시 시도해주세요.", "error");
+    return;
+  }
+
+  const ok = window.confirm(
+    `현재 열려있는 쿠팡 상품 탭 ${productTabs.length}개에서 판매자정보를 읽어옵니다.\n새로 페이지를 열거나 요청을 보내지 않고, 이미 열려있는 탭만 읽습니다.\n시작할까요?`
+  );
+  if (!ok) return;
+
+  const response = await chrome.runtime.sendMessage({ type: "CAPTURE_OPEN_TABS" });
+  if (response && response.ok === false) {
+    setStatus("이미 다른 캡처 작업이 진행 중입니다.", "error");
+    return;
+  }
+  setStatus("열려있는 탭 캡처를 시작했습니다.", "ok");
 }
 
 async function handleBatchStart() {
@@ -354,6 +381,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   document.getElementById("captureBtn").addEventListener("click", handleCapture);
+  document.getElementById("captureOpenTabsBtn").addEventListener("click", handleCaptureOpenTabs);
   document.getElementById("downloadBtn").addEventListener("click", handleDownload);
   document.getElementById("clearBtn").addEventListener("click", handleClear);
   document.getElementById("batchStartBtn").addEventListener("click", handleBatchStart);
