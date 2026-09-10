@@ -364,6 +364,51 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false;
 });
 
+function flashActionBadge(tabId, text, color) {
+  chrome.action.setBadgeText({ text, tabId });
+  chrome.action.setBadgeBackgroundColor({ color, tabId });
+  setTimeout(() => chrome.action.setBadgeText({ text: "", tabId }), 1500);
+}
+
+// Keyboard-shortcut capture for genuine manual browsing: the user
+// opens product pages themselves (clicking links/tabs like any normal
+// shopper) and just presses the shortcut on each one instead of
+// opening the popup and clicking the capture button. Every page load
+// here is a real user navigation, not something this extension
+// triggered, so it carries none of the request-pattern risk that the
+// batch/keyword auto-capture modes do.
+chrome.commands.onCommand.addListener(async (command) => {
+  if (command !== "capture-current-page") return;
+
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !tab.id) return;
+
+  const tryExtract = () =>
+    chrome.scripting
+      .executeScript({ target: { tabId: tab.id }, func: extractCoupangSellerInfo })
+      .then((res) => res && res[0] && res[0].result)
+      .catch(() => null);
+
+  try {
+    let result = await tryExtract();
+    if (result && !result.success && result.reason === "not_found") {
+      // Seller info tab probably isn't open yet — try clicking it once.
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: clickShippingTabIfPresent });
+      await delay(500);
+      result = await tryExtract();
+    }
+
+    if (result && result.success) {
+      await appendRecord({ ...result.data, keyword: "", capturedAt: formatDateTime(new Date()) });
+      flashActionBadge(tab.id, "OK", "#16a34a");
+    } else {
+      flashActionBadge(tab.id, "X", "#dc2626");
+    }
+  } catch (err) {
+    flashActionBadge(tab.id, "X", "#dc2626");
+  }
+});
+
 // Chrome can terminate an idle MV3 service worker and restart it later
 // on the next event; any in-flight batch loop (and its in-memory
 // isRunning/cancelRequested flags) is lost when that happens, which

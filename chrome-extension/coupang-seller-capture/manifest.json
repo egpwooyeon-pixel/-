@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "쿠팡 판매자정보 캡처",
-  "version": "1.1.0",
-  "description": "쿠팡 상품페이지의 판매자 정보를 캡처하여 CSV로 누적 저장합니다. 목록 페이지에서 상품을 자동으로 순회하며 캡처할 수 있습니다.",
+  "version": "1.2.0",
+  "description": "쿠팡 상품페이지의 판매자 정보를 캡처하여 CSV로 누적 저장합니다. 단축키로 즉시 캡처하거나, 목록 페이지에서 여러 상품을 순회하며 캡처할 수 있습니다.",
   "permissions": ["storage", "activeTab", "scripting", "downloads", "tabs"],
   "host_permissions": ["https://www.coupang.com/*"],
   "background": {
@@ -11,5 +11,14 @@
   "action": {
     "default_popup": "popup.html",
     "default_title": "판매자정보 캡처"
+  },
+  "commands": {
+    "capture-current-page": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+C",
+        "mac": "Command+Shift+C"
+      },
+      "description": "현재 쿠팡 상품페이지의 판매자정보 즉시 캡처"
+    }
   }
 }
