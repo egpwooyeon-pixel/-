@@ -3,10 +3,15 @@ importScripts("shared.js");
 const MAX_PRODUCTS_PER_BATCH = 30;
 const MAX_KEYWORDS_PER_BATCH = 50;
 const TAB_LOAD_TIMEOUT_MS = 15000;
-const DELAY_AFTER_LOAD_MS = 600;
-const DELAY_AFTER_TAB_CLICK_MS = 900;
-const DELAY_BETWEEN_PRODUCTS_MS = 1200;
-const DELAY_BETWEEN_KEYWORDS_MS = 1500;
+const DELAY_AFTER_LOAD_MS = 900;
+const DELAY_AFTER_TAB_CLICK_MS = 1200;
+// Base pacing delays between requests. These get random jitter added
+// (see delayWithJitter) so the request cadence doesn't look like a
+// perfectly uniform bot interval, and they're intentionally
+// conservative — the goal is to look like unhurried manual browsing,
+// not to squeeze out maximum throughput.
+const DELAY_BETWEEN_PRODUCTS_MS = 4000;
+const DELAY_BETWEEN_KEYWORDS_MS = 8000;
 
 // In-memory flags for the running batch. Checked directly (no storage
 // round-trip) so "중지" takes effect within one checkpoint instead of
@@ -15,9 +20,15 @@ const DELAY_BETWEEN_KEYWORDS_MS = 1500;
 // bottom for what happens if Chrome terminates the worker mid-batch.
 let isRunning = false;
 let cancelRequested = false;
+let stopReason = ""; // "cancelled" | "blocked" | ""
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function delayWithJitter(baseMs, jitterRatio = 0.35) {
+  const jitter = Math.floor(baseMs * jitterRatio * Math.random());
+  return delay(baseMs + jitter);
 }
 
 function formatDateTime(d) {
@@ -58,6 +69,11 @@ async function appendRecord(record) {
   await chrome.storage.local.set({ records: list });
 }
 
+function markBlocked() {
+  cancelRequested = true;
+  stopReason = "blocked";
+}
+
 function waitForTabComplete(tabId, timeoutMs) {
   return new Promise((resolve) => {
     let settled = false;
@@ -89,29 +105,49 @@ async function closeTabSafely(tabId) {
   }
 }
 
+async function checkBlockedOnTab(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: isCoupangBlockedPage,
+    });
+    return !!(results && results[0] && results[0].result);
+  } catch (err) {
+    return false;
+  }
+}
+
 // Opens a Coupang search results page for `keyword`, harvests the
-// product links on it, and closes the tab. Returns [] on any failure
-// so a bad keyword doesn't abort the whole run.
+// product links on it, and closes the tab. Returns { links, blocked }
+// — a bad/empty keyword just yields links: [], but a detected block
+// page sets blocked: true so the caller stops the whole run instead
+// of continuing to hammer a page that's actively refusing access.
 async function fetchKeywordProductLinks(keyword) {
   let tab;
   try {
     tab = await chrome.tabs.create({ url: buildCoupangSearchUrl(keyword), active: false });
   } catch (err) {
-    return [];
+    return { links: [], blocked: false };
   }
   try {
     await waitForTabComplete(tab.id, TAB_LOAD_TIMEOUT_MS);
-    if (cancelRequested) return [];
-    await delay(DELAY_AFTER_LOAD_MS);
-    if (cancelRequested) return [];
+    if (cancelRequested) return { links: [], blocked: false };
+    await delayWithJitter(DELAY_AFTER_LOAD_MS);
+    if (cancelRequested) return { links: [], blocked: false };
+
+    if (await checkBlockedOnTab(tab.id)) {
+      markBlocked();
+      return { links: [], blocked: true };
+    }
 
     const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: findProductLinksOnListingPage,
     });
-    return (results && results[0] && results[0].result) || [];
+    const links = (results && results[0] && results[0].result) || [];
+    return { links, blocked: false };
   } catch (err) {
-    return [];
+    return { links: [], blocked: false };
   } finally {
     await closeTabSafely(tab.id);
   }
@@ -128,15 +164,20 @@ async function processOneProduct(url, keyword) {
   try {
     await waitForTabComplete(tab.id, TAB_LOAD_TIMEOUT_MS);
     if (cancelRequested) return { ok: false, cancelled: true };
-    await delay(DELAY_AFTER_LOAD_MS);
+    await delayWithJitter(DELAY_AFTER_LOAD_MS);
     if (cancelRequested) return { ok: false, cancelled: true };
+
+    if (await checkBlockedOnTab(tab.id)) {
+      markBlocked();
+      return { ok: false, blocked: true };
+    }
 
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: clickShippingTabIfPresent,
     });
     if (cancelRequested) return { ok: false, cancelled: true };
-    await delay(DELAY_AFTER_TAB_CLICK_MS);
+    await delayWithJitter(DELAY_AFTER_TAB_CLICK_MS);
     if (cancelRequested) return { ok: false, cancelled: true };
 
     const injectionResults = await chrome.scripting.executeScript({
@@ -164,6 +205,7 @@ async function processOneProduct(url, keyword) {
 async function startBatch(sourceTabId) {
   isRunning = true;
   cancelRequested = false;
+  stopReason = "";
 
   let links = [];
   try {
@@ -197,12 +239,8 @@ async function startBatch(sourceTabId) {
     return;
   }
 
-  let stoppedEarly = false;
   for (let i = 0; i < capped.length; i++) {
-    if (cancelRequested) {
-      stoppedEarly = true;
-      break;
-    }
+    if (cancelRequested) break;
 
     const res = await processOneProduct(capped[i], "");
     const status = await getBatchStatus();
@@ -212,20 +250,18 @@ async function startBatch(sourceTabId) {
       currentTitle: res.title || status.currentTitle,
     });
 
-    if (res.cancelled || cancelRequested) {
-      stoppedEarly = true;
-      break;
-    }
-    if (i < capped.length - 1) await delay(DELAY_BETWEEN_PRODUCTS_MS);
+    if (res.cancelled || res.blocked || cancelRequested) break;
+    if (i < capped.length - 1) await delayWithJitter(DELAY_BETWEEN_PRODUCTS_MS);
   }
 
   isRunning = false;
-  await setBatchStatus({ running: false, error: stoppedEarly ? "cancelled" : "" });
+  await setBatchStatus({ running: false, error: stopReason });
 }
 
 async function startKeywordBatch(rawKeywords, perKeywordCount) {
   isRunning = true;
   cancelRequested = false;
+  stopReason = "";
 
   const keywords = rawKeywords
     .map((k) => (k || "").trim())
@@ -253,27 +289,21 @@ async function startKeywordBatch(rawKeywords, perKeywordCount) {
     startedAt: Date.now(),
   });
 
-  let stoppedEarly = false;
-
   for (let k = 0; k < keywords.length; k++) {
-    if (cancelRequested) {
-      stoppedEarly = true;
-      break;
-    }
+    if (cancelRequested) break;
     const keyword = keywords[k];
     await setBatchStatus({ currentKeyword: keyword, total: 0, done: 0, currentTitle: "" });
 
-    const links = await fetchKeywordProductLinks(keyword);
-    if (cancelRequested) {
-      stoppedEarly = true;
-      break;
-    }
+    const { links, blocked } = await fetchKeywordProductLinks(keyword);
+    if (blocked || cancelRequested) break;
+
     const capped = links.slice(0, perKeyword);
     await setBatchStatus({ total: capped.length });
 
+    let keywordStoppedEarly = false;
     for (let i = 0; i < capped.length; i++) {
       if (cancelRequested) {
-        stoppedEarly = true;
+        keywordStoppedEarly = true;
         break;
       }
       const res = await processOneProduct(capped[i], keyword);
@@ -283,23 +313,23 @@ async function startKeywordBatch(rawKeywords, perKeywordCount) {
         failed: status.failed + (res.ok ? 0 : 1),
         currentTitle: res.title || status.currentTitle,
       });
-      if (res.cancelled || cancelRequested) {
-        stoppedEarly = true;
+      if (res.cancelled || res.blocked || cancelRequested) {
+        keywordStoppedEarly = true;
         break;
       }
-      if (i < capped.length - 1) await delay(DELAY_BETWEEN_PRODUCTS_MS);
+      if (i < capped.length - 1) await delayWithJitter(DELAY_BETWEEN_PRODUCTS_MS);
     }
 
-    if (stoppedEarly) break;
+    if (keywordStoppedEarly) break;
 
     const status = await getBatchStatus();
     await setBatchStatus({ keywordDone: status.keywordDone + 1 });
 
-    if (k < keywords.length - 1) await delay(DELAY_BETWEEN_KEYWORDS_MS);
+    if (k < keywords.length - 1) await delayWithJitter(DELAY_BETWEEN_KEYWORDS_MS);
   }
 
   isRunning = false;
-  await setBatchStatus({ running: false, error: stoppedEarly ? "cancelled" : "" });
+  await setBatchStatus({ running: false, error: stopReason });
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -323,6 +353,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message && message.type === "STOP_BATCH") {
     cancelRequested = true;
+    stopReason = "cancelled";
     sendResponse({ ok: true, wasRunning: isRunning });
     return false;
   }

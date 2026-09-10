@@ -220,6 +220,9 @@ function renderBatchStatus(status) {
   } else if (status.error === "cancelled") {
     const doneText = isKeywordMode ? `키워드 ${status.keywordDone} / ${status.keywordTotal}` : `${status.done} / ${status.total}건`;
     progressEl.innerHTML = `중지됨: <b>${doneText}</b>까지 처리`;
+  } else if (status.error === "blocked") {
+    const doneText = isKeywordMode ? `키워드 ${status.keywordDone} / ${status.keywordTotal}` : `${status.done} / ${status.total}건`;
+    progressEl.innerHTML = `<b class="blocked-warning">쿠팡이 자동 접근을 차단한 것으로 보여 작업을 즉시 멈췄습니다</b> (${doneText}까지 저장됨). 몇 시간 정도 쉬었다가 훨씬 적은 개수로 다시 시도해주세요.`;
   } else if (isKeywordMode && status.keywordTotal > 0) {
     progressEl.innerHTML = `완료: 키워드 <b>${status.keywordDone}</b> / ${status.keywordTotal}개 처리`;
   } else if (status.total > 0) {
@@ -258,7 +261,7 @@ async function handleBatchStart() {
 
   const count = Math.min(previewLinks.length, 30);
   const ok = window.confirm(
-    `상품 ${count}개를 순서대로 열어 판매자정보를 자동 캡처합니다.\n상품당 약 2~3초가 걸리며, 팝업을 닫아도 계속 진행됩니다.\n시작할까요?`
+    `상품 ${count}개를 순서대로 열어 판매자정보를 자동 캡처합니다.\n쿠팡에 부담을 주지 않도록 상품당 약 7~8초의 여유를 두고 진행하며, 팝업을 닫아도 계속됩니다.\n쿠팡이 접근을 차단하면 자동으로 즉시 멈춥니다.\n시작할까요?`
   );
   if (!ok) return;
 
@@ -294,10 +297,10 @@ async function handleKeywordStart() {
   countInput.value = String(perKeywordCount);
 
   const maxTotal = keywords.length * perKeywordCount;
-  const estimatedMinutes = Math.max(1, Math.round((keywords.length * (2 + perKeywordCount * 3.5)) / 60));
+  const estimatedMinutes = Math.max(1, Math.round((keywords.length * (11 + perKeywordCount * 7.7)) / 60));
 
   const ok = window.confirm(
-    `키워드 ${keywords.length}개 × 키워드당 최대 ${perKeywordCount}개 = 최대 ${maxTotal}건을 수집합니다.\n예상 소요 시간 약 ${estimatedMinutes}분. 팝업을 닫아도 계속 진행됩니다.${truncatedNote}\n시작할까요?`
+    `키워드 ${keywords.length}개 × 키워드당 최대 ${perKeywordCount}개 = 최대 ${maxTotal}건을 수집합니다.\n쿠팡에 부담을 주지 않도록 여유 있게 진행해 예상 소요 시간은 약 ${estimatedMinutes}분입니다. 팝업을 닫아도 계속됩니다.\n쿠팡이 접근을 차단하면 자동으로 즉시 멈춥니다.${truncatedNote}\n시작할까요?`
   );
   if (!ok) return;
 

@@ -4,6 +4,16 @@
 // browser re-serializes the function body and runs it inside the
 // target page's own context.
 
+// Runs on any Coupang page. Detects Coupang's own "사용권한이
+// 없습니다" access-blocked page (shown when it flags a traffic
+// pattern as automated) so the caller can stop instead of plowing
+// through the rest of the batch against a wall.
+function isCoupangBlockedPage() {
+  const norm = (s) => (s || "").replace(/\s+/g, "");
+  const text = document.body ? document.body.innerText || document.body.textContent || "" : "";
+  return norm(text).includes(norm("사용권한이 없습니다"));
+}
+
 // Runs on a product detail page.
 function extractCoupangSellerInfo() {
   const norm = (s) => s.replace(/\s+/g, "");
