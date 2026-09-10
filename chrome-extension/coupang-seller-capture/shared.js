@@ -3,6 +3,34 @@
 // self-contained (no references to outer closures) because the
 // browser re-serializes the function body and runs it inside the
 // target page's own context.
+//
+// extractCapturedItemKey() below is the one exception — it's a plain
+// string helper (not page-injected) shared between popup.js and
+// background.js via a normal <script>/importScripts include, used to
+// tell whether two captured records are the same seller offer.
+
+// Coupang product URLs carry several ids: the productId in the path
+// is a listing *group* — the same productId can be sold by several
+// different sellers, each with their own vendorItemId — while
+// clickEventId/searchId/traceId etc. are just per-visit tracking noise
+// that differs every time even for the exact same offer. So dedupe by
+// vendorItemId (the most specific real identifier) when present,
+// falling back to itemId, then productId, then the raw URL.
+function extractCapturedItemKey(url) {
+  try {
+    const u = new URL(url);
+    const vendorItemId = u.searchParams.get("vendorItemId");
+    if (vendorItemId) return `v:${vendorItemId}`;
+    const itemId = u.searchParams.get("itemId");
+    if (itemId) return `i:${itemId}`;
+    const m = u.pathname.match(/\/vp\/products\/(\d+)/);
+    if (m) return `p:${m[1]}`;
+    return url || "";
+  } catch (err) {
+    const m = (url || "").match(/\/vp\/products\/(\d+)/);
+    return m ? `p:${m[1]}` : url || "";
+  }
+}
 
 // Runs on any Coupang page. Detects known access-blocked pages —
 // Coupang's own "사용권한이 없습니다" page, and the Akamai

@@ -142,6 +142,13 @@ async function handleCapture() {
   };
 
   const records = await getRecords();
+  const key = extractCapturedItemKey(record.pageUrl);
+  const alreadyCaptured = records.some((r) => extractCapturedItemKey(r.pageUrl) === key);
+  if (alreadyCaptured) {
+    setStatus(`이미 캡처된 상품입니다: ${record.sellerName || "상호 미확인"}`, "");
+    return;
+  }
+
   records.push(record);
   await saveRecords(records);
   renderList(records);
@@ -167,6 +174,36 @@ async function handleDownload() {
   } catch (err) {
     setStatus("다운로드에 실패했습니다.", "error");
   }
+}
+
+// extractCapturedItemKey (from shared.js) identifies a seller offer
+// by vendorItemId/itemId/productId, ignoring per-visit tracking
+// params, so this catches duplicates even if they were captured
+// before that key existed (e.g. records saved by an older version of
+// this extension, before appendRecord started deduping on its own).
+async function handleDedupeExisting() {
+  const records = await getRecords();
+  const seen = new Set();
+  const deduped = [];
+  for (const rec of records) {
+    const key = extractCapturedItemKey(rec.pageUrl);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(rec);
+  }
+
+  const removed = records.length - deduped.length;
+  if (removed === 0) {
+    setStatus("중복 항목이 없습니다.", "ok");
+    return;
+  }
+
+  const ok = window.confirm(`중복 ${removed}건을 제거하고 ${deduped.length}건만 남깁니다. 계속할까요?`);
+  if (!ok) return;
+
+  await saveRecords(deduped);
+  renderList(deduped);
+  setStatus(`중복 ${removed}건을 제거했습니다.`, "ok");
 }
 
 async function handleClear() {
@@ -229,10 +266,12 @@ function renderBatchStatus(status) {
     const doneText = isKeywordMode ? `키워드 ${status.keywordDone} / ${status.keywordTotal}` : `${status.done} / ${status.total}건`;
     progressEl.innerHTML = `<b class="blocked-warning">쿠팡이 자동 접근을 차단한 것으로 보여 작업을 즉시 멈췄습니다</b> (${doneText}까지 저장됨). 몇 시간 정도 쉬었다가 훨씬 적은 개수로 다시 시도해주세요.`;
   } else if (isKeywordMode && status.keywordTotal > 0) {
-    progressEl.innerHTML = `완료: 키워드 <b>${status.keywordDone}</b> / ${status.keywordTotal}개 처리`;
+    const dupText = status.duplicates > 0 ? `, 중복 제외 ${status.duplicates}건` : "";
+    progressEl.innerHTML = `완료: 키워드 <b>${status.keywordDone}</b> / ${status.keywordTotal}개 처리${dupText}`;
   } else if (status.total > 0) {
     const failedText = status.failed > 0 ? `, 실패 ${status.failed}건` : "";
-    progressEl.innerHTML = `완료: <b>${status.done}</b> / ${status.total}건 처리${failedText}`;
+    const dupText = status.duplicates > 0 ? `, 중복 제외 ${status.duplicates}건` : "";
+    progressEl.innerHTML = `완료: <b>${status.done}</b> / ${status.total}건 처리${dupText}${failedText}`;
   }
 }
 
@@ -384,6 +423,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("captureOpenTabsBtn").addEventListener("click", handleCaptureOpenTabs);
   document.getElementById("downloadBtn").addEventListener("click", handleDownload);
   document.getElementById("clearBtn").addEventListener("click", handleClear);
+  document.getElementById("dedupeBtn").addEventListener("click", handleDedupeExisting);
   document.getElementById("batchStartBtn").addEventListener("click", handleBatchStart);
   document.getElementById("keywordStartBtn").addEventListener("click", handleKeywordStart);
   document.getElementById("batchStopBtn").addEventListener("click", handleBatchStop);

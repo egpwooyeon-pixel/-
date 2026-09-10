@@ -49,6 +49,7 @@ async function getBatchStatus() {
       total: 0,
       done: 0,
       failed: 0,
+      duplicates: 0,
       currentTitle: "",
       keywordTotal: 0,
       keywordDone: 0,
@@ -62,11 +63,21 @@ async function setBatchStatus(patch) {
   await chrome.storage.local.set({ batchStatus: { ...current, ...patch } });
 }
 
+// Skips adding a record if the same seller offer (see
+// extractCapturedItemKey in shared.js) is already stored, so
+// re-capturing a tab/product that was already saved — pressing the
+// shortcut twice, running "열려있는 탭 모두 캡처" again, the same
+// product surfacing under two different keywords — doesn't pile up
+// duplicate rows in the CSV. Returns whether it actually added a row.
 async function appendRecord(record) {
   const { records } = await chrome.storage.local.get("records");
   const list = Array.isArray(records) ? records : [];
+  const key = extractCapturedItemKey(record.pageUrl);
+  const alreadyCaptured = list.some((r) => extractCapturedItemKey(r.pageUrl) === key);
+  if (alreadyCaptured) return { added: false };
   list.push(record);
   await chrome.storage.local.set({ records: list });
+  return { added: true };
 }
 
 function markBlocked() {
@@ -187,12 +198,12 @@ async function processOneProduct(url, keyword) {
     const result = injectionResults && injectionResults[0] && injectionResults[0].result;
 
     if (result && result.success) {
-      await appendRecord({
+      const { added } = await appendRecord({
         ...result.data,
         keyword: keyword || "",
         capturedAt: formatDateTime(new Date()),
       });
-      return { ok: true, title: result.data.productTitle };
+      return { ok: true, title: result.data.productTitle, duplicate: !added };
     }
     return { ok: false, title: "", reason: result ? result.reason : "no_result" };
   } catch (err) {
@@ -246,6 +257,7 @@ async function captureOpenTabs() {
     total: tabs.length,
     done: 0,
     failed: 0,
+    duplicates: 0,
     currentTitle: "",
     error: "",
     startedAt: Date.now(),
@@ -269,8 +281,12 @@ async function captureOpenTabs() {
     const result = await extractFromTab(tab.id);
     const status = await getBatchStatus();
     if (result && result.success) {
-      await appendRecord({ ...result.data, keyword: "", capturedAt: formatDateTime(new Date()) });
-      await setBatchStatus({ done: status.done + 1, currentTitle: result.data.productTitle });
+      const { added } = await appendRecord({ ...result.data, keyword: "", capturedAt: formatDateTime(new Date()) });
+      await setBatchStatus({
+        done: status.done + 1,
+        duplicates: status.duplicates + (added ? 0 : 1),
+        currentTitle: result.data.productTitle,
+      });
     } else {
       await setBatchStatus({ done: status.done + 1, failed: status.failed + 1 });
     }
@@ -309,6 +325,7 @@ async function startBatch(sourceTabId) {
     total: capped.length,
     done: 0,
     failed: 0,
+    duplicates: 0,
     currentTitle: "",
     error: "",
     startedAt: Date.now(),
@@ -328,6 +345,7 @@ async function startBatch(sourceTabId) {
     await setBatchStatus({
       done: status.done + 1,
       failed: status.failed + (res.ok ? 0 : 1),
+      duplicates: status.duplicates + (res.duplicate ? 1 : 0),
       currentTitle: res.title || status.currentTitle,
     });
 
@@ -365,6 +383,7 @@ async function startKeywordBatch(rawKeywords, perKeywordCount) {
     total: 0,
     done: 0,
     failed: 0,
+    duplicates: 0,
     currentTitle: "",
     error: "",
     startedAt: Date.now(),
@@ -392,6 +411,7 @@ async function startKeywordBatch(rawKeywords, perKeywordCount) {
       await setBatchStatus({
         done: status.done + 1,
         failed: status.failed + (res.ok ? 0 : 1),
+        duplicates: status.duplicates + (res.duplicate ? 1 : 0),
         currentTitle: res.title || status.currentTitle,
       });
       if (res.cancelled || res.blocked || cancelRequested) {
@@ -477,8 +497,12 @@ chrome.commands.onCommand.addListener(async (command) => {
     const result = await extractFromTab(tab.id);
 
     if (result && result.success) {
-      await appendRecord({ ...result.data, keyword: "", capturedAt: formatDateTime(new Date()) });
-      flashActionBadge(tab.id, "OK", "#16a34a");
+      const { added } = await appendRecord({ ...result.data, keyword: "", capturedAt: formatDateTime(new Date()) });
+      if (added) {
+        flashActionBadge(tab.id, "OK", "#16a34a");
+      } else {
+        flashActionBadge(tab.id, "DUP", "#d97706");
+      }
     } else {
       flashActionBadge(tab.id, "X", "#dc2626");
     }

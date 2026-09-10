@@ -57,6 +57,12 @@
     border: 1px solid #e5e7eb;
   }
   #clearBtn:hover { background: #fee2e2; }
+  #dedupeBtn {
+    background: #f3f4f6;
+    color: #374151;
+    border: 1px solid #e5e7eb;
+  }
+  #dedupeBtn:hover { background: #e5e7eb; }
   #status {
     min-height: 18px;
     margin: 4px 0 10px;
@@ -228,6 +234,7 @@
   <div class="count">저장된 항목: <b id="countNum">0</b>건</div>
   <div class="row-buttons">
     <button id="downloadBtn">CSV 다운로드</button>
+    <button id="dedupeBtn">중복 정리</button>
     <button id="clearBtn">전체 삭제</button>
   </div>
   <div id="list"></div>
