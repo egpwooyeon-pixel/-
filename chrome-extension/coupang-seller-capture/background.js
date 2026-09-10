@@ -1,10 +1,12 @@
 importScripts("shared.js");
 
 const MAX_PRODUCTS_PER_BATCH = 30;
+const MAX_KEYWORDS_PER_BATCH = 50;
 const TAB_LOAD_TIMEOUT_MS = 15000;
 const DELAY_AFTER_LOAD_MS = 600;
 const DELAY_AFTER_TAB_CLICK_MS = 900;
 const DELAY_BETWEEN_PRODUCTS_MS = 1200;
+const DELAY_BETWEEN_KEYWORDS_MS = 1500;
 
 // In-memory flags for the running batch. Checked directly (no storage
 // round-trip) so "중지" takes effect within one checkpoint instead of
@@ -23,9 +25,25 @@ function formatDateTime(d) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+function buildCoupangSearchUrl(keyword) {
+  return `https://www.coupang.com/np/search?component=&q=${encodeURIComponent(keyword)}&channel=user`;
+}
+
 async function getBatchStatus() {
   const { batchStatus } = await chrome.storage.local.get("batchStatus");
-  return batchStatus || { running: false, total: 0, done: 0, failed: 0, currentTitle: "" };
+  return (
+    batchStatus || {
+      running: false,
+      mode: "",
+      total: 0,
+      done: 0,
+      failed: 0,
+      currentTitle: "",
+      keywordTotal: 0,
+      keywordDone: 0,
+      currentKeyword: "",
+    }
+  );
 }
 
 async function setBatchStatus(patch) {
@@ -63,10 +81,49 @@ function waitForTabComplete(tabId, timeoutMs) {
   });
 }
 
+async function closeTabSafely(tabId) {
+  try {
+    await chrome.tabs.remove(tabId);
+  } catch (e) {
+    // tab may already be closed
+  }
+}
+
+// Opens a Coupang search results page for `keyword`, harvests the
+// product links on it, and closes the tab. Returns [] on any failure
+// so a bad keyword doesn't abort the whole run.
+async function fetchKeywordProductLinks(keyword) {
+  let tab;
+  try {
+    tab = await chrome.tabs.create({ url: buildCoupangSearchUrl(keyword), active: false });
+  } catch (err) {
+    return [];
+  }
+  try {
+    await waitForTabComplete(tab.id, TAB_LOAD_TIMEOUT_MS);
+    if (cancelRequested) return [];
+    await delay(DELAY_AFTER_LOAD_MS);
+    if (cancelRequested) return [];
+
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: findProductLinksOnListingPage,
+    });
+    return (results && results[0] && results[0].result) || [];
+  } catch (err) {
+    return [];
+  } finally {
+    await closeTabSafely(tab.id);
+  }
+}
+
 // Processes one product tab, bailing out early at each checkpoint if
 // the user has requested a stop, so cancellation doesn't have to wait
-// for the slowest step (tab load) to finish.
-async function processOneProduct(url) {
+// for the slowest step (tab load) to finish. `keyword` is recorded
+// alongside the seller info when this product came from a keyword
+// search, so the CSV can be grouped by keyword; it's "" for captures
+// triggered from a listing page or a single product page.
+async function processOneProduct(url, keyword) {
   const tab = await chrome.tabs.create({ url, active: false });
   try {
     await waitForTabComplete(tab.id, TAB_LOAD_TIMEOUT_MS);
@@ -89,18 +146,18 @@ async function processOneProduct(url) {
     const result = injectionResults && injectionResults[0] && injectionResults[0].result;
 
     if (result && result.success) {
-      await appendRecord({ ...result.data, capturedAt: formatDateTime(new Date()) });
+      await appendRecord({
+        ...result.data,
+        keyword: keyword || "",
+        capturedAt: formatDateTime(new Date()),
+      });
       return { ok: true, title: result.data.productTitle };
     }
     return { ok: false, title: "", reason: result ? result.reason : "no_result" };
   } catch (err) {
     return { ok: false, title: "", reason: "exception" };
   } finally {
-    try {
-      await chrome.tabs.remove(tab.id);
-    } catch (e) {
-      // tab may already be closed
-    }
+    await closeTabSafely(tab.id);
   }
 }
 
@@ -117,7 +174,7 @@ async function startBatch(sourceTabId) {
     links = (linkResults && linkResults[0] && linkResults[0].result) || [];
   } catch (err) {
     isRunning = false;
-    await setBatchStatus({ running: false, error: "listing_read_failed" });
+    await setBatchStatus({ running: false, mode: "listing", error: "listing_read_failed" });
     return;
   }
 
@@ -125,6 +182,7 @@ async function startBatch(sourceTabId) {
 
   await setBatchStatus({
     running: true,
+    mode: "listing",
     total: capped.length,
     done: 0,
     failed: 0,
@@ -146,7 +204,7 @@ async function startBatch(sourceTabId) {
       break;
     }
 
-    const res = await processOneProduct(capped[i]);
+    const res = await processOneProduct(capped[i], "");
     const status = await getBatchStatus();
     await setBatchStatus({
       done: status.done + 1,
@@ -165,6 +223,85 @@ async function startBatch(sourceTabId) {
   await setBatchStatus({ running: false, error: stoppedEarly ? "cancelled" : "" });
 }
 
+async function startKeywordBatch(rawKeywords, perKeywordCount) {
+  isRunning = true;
+  cancelRequested = false;
+
+  const keywords = rawKeywords
+    .map((k) => (k || "").trim())
+    .filter((k) => k.length > 0)
+    .slice(0, MAX_KEYWORDS_PER_BATCH);
+  const perKeyword = Math.min(Math.max(1, perKeywordCount || MAX_PRODUCTS_PER_BATCH), MAX_PRODUCTS_PER_BATCH);
+
+  if (keywords.length === 0) {
+    isRunning = false;
+    await setBatchStatus({ running: false, mode: "keywords", error: "no_keywords" });
+    return;
+  }
+
+  await setBatchStatus({
+    running: true,
+    mode: "keywords",
+    keywordTotal: keywords.length,
+    keywordDone: 0,
+    currentKeyword: "",
+    total: 0,
+    done: 0,
+    failed: 0,
+    currentTitle: "",
+    error: "",
+    startedAt: Date.now(),
+  });
+
+  let stoppedEarly = false;
+
+  for (let k = 0; k < keywords.length; k++) {
+    if (cancelRequested) {
+      stoppedEarly = true;
+      break;
+    }
+    const keyword = keywords[k];
+    await setBatchStatus({ currentKeyword: keyword, total: 0, done: 0, currentTitle: "" });
+
+    const links = await fetchKeywordProductLinks(keyword);
+    if (cancelRequested) {
+      stoppedEarly = true;
+      break;
+    }
+    const capped = links.slice(0, perKeyword);
+    await setBatchStatus({ total: capped.length });
+
+    for (let i = 0; i < capped.length; i++) {
+      if (cancelRequested) {
+        stoppedEarly = true;
+        break;
+      }
+      const res = await processOneProduct(capped[i], keyword);
+      const status = await getBatchStatus();
+      await setBatchStatus({
+        done: status.done + 1,
+        failed: status.failed + (res.ok ? 0 : 1),
+        currentTitle: res.title || status.currentTitle,
+      });
+      if (res.cancelled || cancelRequested) {
+        stoppedEarly = true;
+        break;
+      }
+      if (i < capped.length - 1) await delay(DELAY_BETWEEN_PRODUCTS_MS);
+    }
+
+    if (stoppedEarly) break;
+
+    const status = await getBatchStatus();
+    await setBatchStatus({ keywordDone: status.keywordDone + 1 });
+
+    if (k < keywords.length - 1) await delay(DELAY_BETWEEN_KEYWORDS_MS);
+  }
+
+  isRunning = false;
+  await setBatchStatus({ running: false, error: stoppedEarly ? "cancelled" : "" });
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message && message.type === "START_BATCH" && message.sourceTabId) {
     if (isRunning) {
@@ -172,6 +309,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     }
     startBatch(message.sourceTabId);
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (message && message.type === "START_KEYWORD_BATCH" && Array.isArray(message.keywords)) {
+    if (isRunning) {
+      sendResponse({ ok: false, reason: "already_running" });
+      return false;
+    }
+    startKeywordBatch(message.keywords, message.perKeywordCount);
     sendResponse({ ok: true });
     return false;
   }

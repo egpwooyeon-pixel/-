@@ -151,6 +151,39 @@
     width: 0%;
     transition: width 0.2s ease;
   }
+  #keywordsInput {
+    width: 100%;
+    height: 70px;
+    resize: vertical;
+    font-family: inherit;
+    font-size: 12px;
+    padding: 6px 8px;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    margin-bottom: 6px;
+    box-sizing: border-box;
+  }
+  .keyword-count-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+    font-size: 12px;
+    color: #4b5563;
+  }
+  #perKeywordCount {
+    width: 56px;
+    padding: 4px 6px;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    font-size: 12px;
+  }
+  #keywordStartBtn {
+    background: #7c3aed;
+    color: #fff;
+  }
+  #keywordStartBtn:hover { background: #6d28d9; }
+  #keywordStartBtn:disabled { background: #c4b5fd; cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -161,8 +194,20 @@
   <hr />
   <div class="section-title">상품목록 자동 캡처</div>
   <div class="section-desc">쿠팡 검색/카테고리 목록 페이지에서 사용하세요. 화면에 보이는 상품을 순서대로 열어 판매자정보를 자동 캡처합니다. (최대 30개)</div>
+  <button id="batchStartBtn">이 페이지 자동 캡처 시작</button>
+
+  <hr />
+  <div class="section-title">키워드로 자동 수집</div>
+  <div class="section-desc">키워드를 한 줄에 하나씩 입력하면, 각 키워드로 쿠팡을 검색해 상위 상품들의 판매자정보를 순서대로 수집합니다. (최대 키워드 50개)</div>
+  <textarea id="keywordsInput" placeholder="예)&#10;컴퓨터책상&#10;게이밍 의자&#10;무선 청소기"></textarea>
+  <div class="keyword-count-row">
+    <span>키워드당 수집 개수</span>
+    <input type="number" id="perKeywordCount" min="1" max="30" value="30" />
+  </div>
+  <button id="keywordStartBtn">키워드 자동 수집 시작</button>
+
+  <hr />
   <div class="row-buttons">
-    <button id="batchStartBtn">자동 캡처 시작</button>
     <button id="batchStopBtn">중지</button>
   </div>
   <div class="progress-bar" id="progressBar"><div class="progress-bar-fill" id="progressBarFill"></div></div>

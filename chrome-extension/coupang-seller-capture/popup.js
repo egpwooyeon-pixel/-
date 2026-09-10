@@ -1,5 +1,6 @@
 const CSV_COLUMNS = [
   { key: "capturedAt", header: "캡처일시" },
+  { key: "keyword", header: "검색키워드" },
   { key: "sellerName", header: "상호/대표자" },
   { key: "address", header: "사업장 소재지" },
   { key: "email", header: "e-mail" },
@@ -183,29 +184,44 @@ function renderBatchStatus(status) {
   const barWrap = document.getElementById("progressBar");
   const barFill = document.getElementById("progressBarFill");
   const startBtn = document.getElementById("batchStartBtn");
+  const keywordStartBtn = document.getElementById("keywordStartBtn");
 
-  if (!status || (!status.running && !status.total)) {
+  const hasContent = status && (status.running || status.total > 0 || status.keywordTotal > 0);
+  if (!hasContent) {
     progressEl.textContent = "";
     barWrap.classList.remove("active");
     startBtn.disabled = false;
+    keywordStartBtn.disabled = false;
     return;
   }
 
+  const isKeywordMode = status.mode === "keywords";
   const pct = status.total > 0 ? Math.round((status.done / status.total) * 100) : 0;
   barWrap.classList.add("active");
   barFill.style.width = `${pct}%`;
   startBtn.disabled = !!status.running;
+  keywordStartBtn.disabled = !!status.running;
 
-  if (status.running) {
-    progressEl.innerHTML = `<b>${status.done} / ${status.total}</b> 캡처 중... ${status.currentTitle ? "(" + status.currentTitle.slice(0, 24) + ")" : ""}`;
+  const titleSuffix = status.currentTitle ? " (" + status.currentTitle.slice(0, 22) + ")" : "";
+
+  if (status.running && isKeywordMode) {
+    progressEl.innerHTML = `키워드 <b>${status.keywordDone} / ${status.keywordTotal}</b> "${status.currentKeyword}" · 상품 <b>${status.done} / ${status.total}</b> 캡처 중...${titleSuffix}`;
+  } else if (status.running) {
+    progressEl.innerHTML = `<b>${status.done} / ${status.total}</b> 캡처 중...${titleSuffix}`;
   } else if (status.error === "no_links_found") {
     progressEl.textContent = "이 페이지에서 상품 링크를 찾지 못했습니다. 쿠팡 검색/카테고리 목록 페이지에서 사용해주세요.";
   } else if (status.error === "listing_read_failed") {
     progressEl.textContent = "목록 페이지를 읽는 데 실패했습니다. 페이지를 새로고침한 뒤 다시 시도해주세요.";
+  } else if (status.error === "no_keywords") {
+    progressEl.textContent = "입력된 키워드가 없습니다.";
   } else if (status.error === "interrupted") {
-    progressEl.innerHTML = `크롬이 확장프로그램을 잠시 재시작해 작업이 중단됐습니다 (<b>${status.done}</b> / ${status.total}건까지 저장됨). 필요하면 다시 시작해주세요.`;
+    const doneText = isKeywordMode ? `키워드 ${status.keywordDone} / ${status.keywordTotal}` : `${status.done} / ${status.total}건`;
+    progressEl.innerHTML = `크롬이 확장프로그램을 잠시 재시작해 작업이 중단됐습니다 (<b>${doneText}</b>까지 저장됨). 필요하면 다시 시작해주세요.`;
   } else if (status.error === "cancelled") {
-    progressEl.innerHTML = `중지됨: <b>${status.done}</b> / ${status.total}건까지 처리`;
+    const doneText = isKeywordMode ? `키워드 ${status.keywordDone} / ${status.keywordTotal}` : `${status.done} / ${status.total}건`;
+    progressEl.innerHTML = `중지됨: <b>${doneText}</b>까지 처리`;
+  } else if (isKeywordMode && status.keywordTotal > 0) {
+    progressEl.innerHTML = `완료: 키워드 <b>${status.keywordDone}</b> / ${status.keywordTotal}개 처리`;
   } else if (status.total > 0) {
     const failedText = status.failed > 0 ? `, 실패 ${status.failed}건` : "";
     progressEl.innerHTML = `완료: <b>${status.done}</b> / ${status.total}건 처리${failedText}`;
@@ -254,6 +270,49 @@ async function handleBatchStart() {
   setStatus("자동 캡처를 시작했습니다.", "ok");
 }
 
+async function handleKeywordStart() {
+  const textarea = document.getElementById("keywordsInput");
+  const countInput = document.getElementById("perKeywordCount");
+
+  const allKeywords = textarea.value
+    .split("\n")
+    .map((k) => k.trim())
+    .filter((k) => k.length > 0);
+
+  if (allKeywords.length === 0) {
+    setStatus("키워드를 한 줄에 하나씩 입력해주세요.", "error");
+    return;
+  }
+
+  const MAX_KEYWORDS = 50;
+  const keywords = allKeywords.slice(0, MAX_KEYWORDS);
+  const truncatedNote = allKeywords.length > MAX_KEYWORDS ? `\n(입력하신 ${allKeywords.length}개 중 앞 ${MAX_KEYWORDS}개만 사용합니다.)` : "";
+
+  let perKeywordCount = parseInt(countInput.value, 10);
+  if (!Number.isFinite(perKeywordCount) || perKeywordCount < 1) perKeywordCount = 1;
+  if (perKeywordCount > 30) perKeywordCount = 30;
+  countInput.value = String(perKeywordCount);
+
+  const maxTotal = keywords.length * perKeywordCount;
+  const estimatedMinutes = Math.max(1, Math.round((keywords.length * (2 + perKeywordCount * 3.5)) / 60));
+
+  const ok = window.confirm(
+    `키워드 ${keywords.length}개 × 키워드당 최대 ${perKeywordCount}개 = 최대 ${maxTotal}건을 수집합니다.\n예상 소요 시간 약 ${estimatedMinutes}분. 팝업을 닫아도 계속 진행됩니다.${truncatedNote}\n시작할까요?`
+  );
+  if (!ok) return;
+
+  const response = await chrome.runtime.sendMessage({
+    type: "START_KEYWORD_BATCH",
+    keywords,
+    perKeywordCount,
+  });
+  if (response && response.ok === false) {
+    setStatus("이미 자동 캡처가 진행 중입니다.", "error");
+    return;
+  }
+  setStatus("키워드 자동 수집을 시작했습니다.", "ok");
+}
+
 async function handleBatchStop() {
   const stopBtn = document.getElementById("batchStopBtn");
   stopBtn.disabled = true;
@@ -295,5 +354,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("downloadBtn").addEventListener("click", handleDownload);
   document.getElementById("clearBtn").addEventListener("click", handleClear);
   document.getElementById("batchStartBtn").addEventListener("click", handleBatchStart);
+  document.getElementById("keywordStartBtn").addEventListener("click", handleKeywordStart);
   document.getElementById("batchStopBtn").addEventListener("click", handleBatchStop);
 });
