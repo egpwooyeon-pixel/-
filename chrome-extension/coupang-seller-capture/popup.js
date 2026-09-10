@@ -308,11 +308,14 @@ async function handleBatchStart() {
     return;
   }
 
+  const rocketOnly = document.getElementById("rocketOnlyCheckbox").checked;
+
   let previewLinks = [];
   try {
     const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: findProductLinksOnListingPage,
+      args: [rocketOnly],
     });
     previewLinks = (results && results[0] && results[0].result) || [];
   } catch (err) {
@@ -321,17 +324,21 @@ async function handleBatchStart() {
   }
 
   if (previewLinks.length === 0) {
-    setStatus("이 페이지에서 상품 링크를 찾지 못했습니다.", "error");
+    setStatus(
+      rocketOnly ? "이 페이지에서 로켓 배지 상품을 찾지 못했습니다." : "이 페이지에서 상품 링크를 찾지 못했습니다.",
+      "error"
+    );
     return;
   }
 
   const count = Math.min(previewLinks.length, 30);
+  const rocketNote = rocketOnly ? " (로켓 배지 상품만)" : "";
   const ok = window.confirm(
-    `상품 ${count}개를 순서대로 열어 판매자정보를 자동 캡처합니다.\n쿠팡에 부담을 주지 않도록 상품당 약 7~8초의 여유를 두고 진행하며, 팝업을 닫아도 계속됩니다.\n쿠팡이 접근을 차단하면 자동으로 즉시 멈춥니다.\n시작할까요?`
+    `상품 ${count}개${rocketNote}를 순서대로 열어 판매자정보를 자동 캡처합니다.\n쿠팡에 부담을 주지 않도록 상품당 약 7~8초의 여유를 두고 진행하며, 팝업을 닫아도 계속됩니다.\n쿠팡이 접근을 차단하면 자동으로 즉시 멈춥니다.\n시작할까요?`
   );
   if (!ok) return;
 
-  const response = await chrome.runtime.sendMessage({ type: "START_BATCH", sourceTabId: tab.id });
+  const response = await chrome.runtime.sendMessage({ type: "START_BATCH", sourceTabId: tab.id, rocketOnly });
   if (response && response.ok === false) {
     setStatus("이미 자동 캡처가 진행 중입니다.", "error");
     return;
@@ -362,11 +369,13 @@ async function handleKeywordStart() {
   if (perKeywordCount > 30) perKeywordCount = 30;
   countInput.value = String(perKeywordCount);
 
+  const rocketOnly = document.getElementById("rocketOnlyCheckbox").checked;
   const maxTotal = keywords.length * perKeywordCount;
   const estimatedMinutes = Math.max(1, Math.round((keywords.length * (11 + perKeywordCount * 7.7)) / 60));
+  const rocketNote = rocketOnly ? " (로켓 배지 상품만)" : "";
 
   const ok = window.confirm(
-    `키워드 ${keywords.length}개 × 키워드당 최대 ${perKeywordCount}개 = 최대 ${maxTotal}건을 수집합니다.\n쿠팡에 부담을 주지 않도록 여유 있게 진행해 예상 소요 시간은 약 ${estimatedMinutes}분입니다. 팝업을 닫아도 계속됩니다.\n쿠팡이 접근을 차단하면 자동으로 즉시 멈춥니다.${truncatedNote}\n시작할까요?`
+    `키워드 ${keywords.length}개 × 키워드당 최대 ${perKeywordCount}개${rocketNote} = 최대 ${maxTotal}건을 수집합니다.\n쿠팡에 부담을 주지 않도록 여유 있게 진행해 예상 소요 시간은 약 ${estimatedMinutes}분입니다. 팝업을 닫아도 계속됩니다.\n쿠팡이 접근을 차단하면 자동으로 즉시 멈춥니다.${truncatedNote}\n시작할까요?`
   );
   if (!ok) return;
 
@@ -374,6 +383,7 @@ async function handleKeywordStart() {
     type: "START_KEYWORD_BATCH",
     keywords,
     perKeywordCount,
+    rocketOnly,
   });
   if (response && response.ok === false) {
     setStatus("이미 자동 캡처가 진행 중입니다.", "error");

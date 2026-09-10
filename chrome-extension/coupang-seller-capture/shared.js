@@ -130,8 +130,25 @@ function clickShippingTabIfPresent() {
   return false;
 }
 
-// Runs on a Coupang search/category listing page.
-function findProductLinksOnListingPage() {
+// Walks up from a product anchor to the largest ancestor that still
+// belongs to just that one product card — stops as soon as a parent
+// would span more than one product anchor (i.e. the shared list
+// container). Coupang's card markup uses hashed/rotating class names
+// so this counts sibling product links instead of matching a class.
+function findProductCardContainer(anchor) {
+  let current = anchor;
+  while (current.parentElement && current.parentElement !== document.body) {
+    const parent = current.parentElement;
+    if (parent.querySelectorAll('a[href*="/vp/products/"]').length > 1) break;
+    current = parent;
+  }
+  return current;
+}
+
+// Runs on a Coupang search/category listing page. Pass rocketOnly:
+// true to keep only cards showing a "로켓" delivery badge
+// (판매자로켓/로켓배송/로켓프레시/로켓직구 all contain "로켓").
+function findProductLinksOnListingPage(rocketOnly) {
   const anchors = Array.from(document.querySelectorAll('a[href*="/vp/products/"]'));
   const seen = new Set();
   const links = [];
@@ -141,6 +158,13 @@ function findProductLinksOnListingPage() {
     if (!m) continue;
     const id = m[1];
     if (seen.has(id)) continue;
+
+    if (rocketOnly) {
+      const container = findProductCardContainer(a);
+      const text = container ? container.textContent || "" : "";
+      if (!text.includes("로켓")) continue;
+    }
+
     seen.add(id);
     links.push(href);
   }

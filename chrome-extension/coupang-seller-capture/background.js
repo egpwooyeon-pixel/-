@@ -133,7 +133,7 @@ async function checkBlockedOnTab(tabId) {
 // — a bad/empty keyword just yields links: [], but a detected block
 // page sets blocked: true so the caller stops the whole run instead
 // of continuing to hammer a page that's actively refusing access.
-async function fetchKeywordProductLinks(keyword) {
+async function fetchKeywordProductLinks(keyword, rocketOnly) {
   let tab;
   try {
     tab = await chrome.tabs.create({ url: buildCoupangSearchUrl(keyword), active: false });
@@ -154,6 +154,7 @@ async function fetchKeywordProductLinks(keyword) {
     const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: findProductLinksOnListingPage,
+      args: [!!rocketOnly],
     });
     const links = (results && results[0] && results[0].result) || [];
     return { links, blocked: false };
@@ -299,7 +300,7 @@ async function captureOpenTabs() {
   await setBatchStatus({ running: false, error: stopReason });
 }
 
-async function startBatch(sourceTabId) {
+async function startBatch(sourceTabId, rocketOnly) {
   isRunning = true;
   cancelRequested = false;
   stopReason = "";
@@ -309,6 +310,7 @@ async function startBatch(sourceTabId) {
     const linkResults = await chrome.scripting.executeScript({
       target: { tabId: sourceTabId },
       func: findProductLinksOnListingPage,
+      args: [!!rocketOnly],
     });
     links = (linkResults && linkResults[0] && linkResults[0].result) || [];
   } catch (err) {
@@ -357,7 +359,7 @@ async function startBatch(sourceTabId) {
   await setBatchStatus({ running: false, error: stopReason });
 }
 
-async function startKeywordBatch(rawKeywords, perKeywordCount) {
+async function startKeywordBatch(rawKeywords, perKeywordCount, rocketOnly) {
   isRunning = true;
   cancelRequested = false;
   stopReason = "";
@@ -394,7 +396,7 @@ async function startKeywordBatch(rawKeywords, perKeywordCount) {
     const keyword = keywords[k];
     await setBatchStatus({ currentKeyword: keyword, total: 0, done: 0, currentTitle: "" });
 
-    const { links, blocked } = await fetchKeywordProductLinks(keyword);
+    const { links, blocked } = await fetchKeywordProductLinks(keyword, rocketOnly);
     if (blocked || cancelRequested) break;
 
     const capped = links.slice(0, perKeyword);
@@ -439,7 +441,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, reason: "already_running" });
       return false;
     }
-    startBatch(message.sourceTabId);
+    startBatch(message.sourceTabId, message.rocketOnly);
     sendResponse({ ok: true });
     return false;
   }
@@ -448,7 +450,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, reason: "already_running" });
       return false;
     }
-    startKeywordBatch(message.keywords, message.perKeywordCount);
+    startKeywordBatch(message.keywords, message.perKeywordCount, message.rocketOnly);
     sendResponse({ ok: true });
     return false;
   }
