@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>쿠팡 판매자정보 캡처</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    width: 360px;
+    margin: 0;
+    padding: 14px;
+    font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+    font-size: 13px;
+    color: #222;
+  }
+  h1 {
+    font-size: 15px;
+    margin: 0 0 10px;
+  }
+  button {
+    width: 100%;
+    padding: 9px 10px;
+    margin-bottom: 8px;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  #captureBtn {
+    background: #2563eb;
+    color: #fff;
+    font-weight: 600;
+  }
+  #captureBtn:hover { background: #1d4ed8; }
+  .row-buttons {
+    display: flex;
+    gap: 8px;
+  }
+  .row-buttons button {
+    flex: 1;
+  }
+  #downloadBtn {
+    background: #16a34a;
+    color: #fff;
+  }
+  #downloadBtn:hover { background: #15803d; }
+  #clearBtn {
+    background: #f3f4f6;
+    color: #b91c1c;
+    border: 1px solid #e5e7eb;
+  }
+  #clearBtn:hover { background: #fee2e2; }
+  #status {
+    min-height: 18px;
+    margin: 4px 0 10px;
+    font-size: 12px;
+    color: #6b7280;
+  }
+  #status.error { color: #dc2626; }
+  #status.ok { color: #16a34a; }
+  .count {
+    font-size: 12px;
+    color: #374151;
+    margin-bottom: 6px;
+  }
+  .count b { color: #111827; }
+  #list {
+    max-height: 260px;
+    overflow-y: auto;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+  }
+  .item {
+    padding: 8px 10px;
+    border-bottom: 1px solid #f0f0f0;
+    position: relative;
+  }
+  .item:last-child { border-bottom: none; }
+  .item .seller {
+    font-weight: 600;
+    margin-bottom: 2px;
+  }
+  .item .meta {
+    color: #6b7280;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .item .del {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    width: auto;
+    padding: 2px 6px;
+    margin: 0;
+    background: transparent;
+    color: #9ca3af;
+    font-size: 12px;
+  }
+  .item .del:hover { color: #dc2626; }
+  .empty {
+    padding: 16px 10px;
+    text-align: center;
+    color: #9ca3af;
+  }
+</style>
+</head>
+<body>
+  <h1>쿠팡 판매자정보 캡처</h1>
+  <button id="captureBtn">이 페이지에서 판매자정보 캡처</button>
+  <div id="status"></div>
+  <div class="count">저장된 항목: <b id="countNum">0</b>건</div>
+  <div class="row-buttons">
+    <button id="downloadBtn">CSV 다운로드</button>
+    <button id="clearBtn">전체 삭제</button>
+  </div>
+  <div id="list"></div>
+  <script src="popup.js"></script>
+</body>
+</html>

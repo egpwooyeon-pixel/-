@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "쿠팡 판매자정보 캡처",
+  "version": "1.0.0",
+  "description": "쿠팡 상품페이지의 판매자 정보를 캡처하여 CSV로 누적 저장합니다.",
+  "permissions": ["storage", "activeTab", "scripting", "downloads"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "판매자정보 캡처"
+  }
+}
