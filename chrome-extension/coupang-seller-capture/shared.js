@@ -4,14 +4,19 @@
 // browser re-serializes the function body and runs it inside the
 // target page's own context.
 
-// Runs on any Coupang page. Detects Coupang's own "사용권한이
-// 없습니다" access-blocked page (shown when it flags a traffic
-// pattern as automated) so the caller can stop instead of plowing
-// through the rest of the batch against a wall.
+// Runs on any Coupang page. Detects known access-blocked pages —
+// Coupang's own "사용권한이 없습니다" page, and the Akamai
+// (errors.edgesuite.net) "Access Denied" edge block that can trigger
+// before the request even reaches Coupang's app servers — so the
+// caller can stop instead of plowing through the rest of the batch
+// against a wall.
 function isCoupangBlockedPage() {
-  const norm = (s) => (s || "").replace(/\s+/g, "");
+  const norm = (s) => (s || "").replace(/\s+/g, "").toLowerCase();
   const text = document.body ? document.body.innerText || document.body.textContent || "" : "";
-  return norm(text).includes(norm("사용권한이 없습니다"));
+  const normalized = norm(text);
+  if (normalized.includes(norm("사용권한이 없습니다"))) return true;
+  if (normalized.includes(norm("Access Denied")) && normalized.includes(norm("don't have permission to access"))) return true;
+  return false;
 }
 
 // Runs on a product detail page.
