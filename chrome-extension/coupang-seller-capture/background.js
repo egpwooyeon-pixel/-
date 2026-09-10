@@ -6,6 +6,14 @@ const DELAY_AFTER_LOAD_MS = 600;
 const DELAY_AFTER_TAB_CLICK_MS = 900;
 const DELAY_BETWEEN_PRODUCTS_MS = 1200;
 
+// In-memory flags for the running batch. Checked directly (no storage
+// round-trip) so "중지" takes effect within one checkpoint instead of
+// waiting on an async read. These only live as long as this service
+// worker instance does; see the startup reconciliation block at the
+// bottom for what happens if Chrome terminates the worker mid-batch.
+let isRunning = false;
+let cancelRequested = false;
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -23,11 +31,6 @@ async function getBatchStatus() {
 async function setBatchStatus(patch) {
   const current = await getBatchStatus();
   await chrome.storage.local.set({ batchStatus: { ...current, ...patch } });
-}
-
-async function isCancelRequested() {
-  const { batchCancelRequested } = await chrome.storage.local.get("batchCancelRequested");
-  return !!batchCancelRequested;
 }
 
 async function appendRecord(record) {
@@ -60,17 +63,24 @@ function waitForTabComplete(tabId, timeoutMs) {
   });
 }
 
+// Processes one product tab, bailing out early at each checkpoint if
+// the user has requested a stop, so cancellation doesn't have to wait
+// for the slowest step (tab load) to finish.
 async function processOneProduct(url) {
   const tab = await chrome.tabs.create({ url, active: false });
   try {
     await waitForTabComplete(tab.id, TAB_LOAD_TIMEOUT_MS);
+    if (cancelRequested) return { ok: false, cancelled: true };
     await delay(DELAY_AFTER_LOAD_MS);
+    if (cancelRequested) return { ok: false, cancelled: true };
 
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: clickShippingTabIfPresent,
     });
+    if (cancelRequested) return { ok: false, cancelled: true };
     await delay(DELAY_AFTER_TAB_CLICK_MS);
+    if (cancelRequested) return { ok: false, cancelled: true };
 
     const injectionResults = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
@@ -95,10 +105,8 @@ async function processOneProduct(url) {
 }
 
 async function startBatch(sourceTabId) {
-  const current = await getBatchStatus();
-  if (current.running) return;
-
-  await chrome.storage.local.set({ batchCancelRequested: false });
+  isRunning = true;
+  cancelRequested = false;
 
   let links = [];
   try {
@@ -108,6 +116,7 @@ async function startBatch(sourceTabId) {
     });
     links = (linkResults && linkResults[0] && linkResults[0].result) || [];
   } catch (err) {
+    isRunning = false;
     await setBatchStatus({ running: false, error: "listing_read_failed" });
     return;
   }
@@ -125,12 +134,17 @@ async function startBatch(sourceTabId) {
   });
 
   if (capped.length === 0) {
+    isRunning = false;
     await setBatchStatus({ running: false, error: "no_links_found" });
     return;
   }
 
+  let stoppedEarly = false;
   for (let i = 0; i < capped.length; i++) {
-    if (await isCancelRequested()) break;
+    if (cancelRequested) {
+      stoppedEarly = true;
+      break;
+    }
 
     const res = await processOneProduct(capped[i]);
     const status = await getBatchStatus();
@@ -140,17 +154,48 @@ async function startBatch(sourceTabId) {
       currentTitle: res.title || status.currentTitle,
     });
 
+    if (res.cancelled || cancelRequested) {
+      stoppedEarly = true;
+      break;
+    }
     if (i < capped.length - 1) await delay(DELAY_BETWEEN_PRODUCTS_MS);
   }
 
-  await setBatchStatus({ running: false });
+  isRunning = false;
+  await setBatchStatus({ running: false, error: stoppedEarly ? "cancelled" : "" });
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message && message.type === "START_BATCH" && message.sourceTabId) {
+    if (isRunning) {
+      sendResponse({ ok: false, reason: "already_running" });
+      return false;
+    }
     startBatch(message.sourceTabId);
     sendResponse({ ok: true });
     return false;
   }
+  if (message && message.type === "STOP_BATCH") {
+    cancelRequested = true;
+    sendResponse({ ok: true, wasRunning: isRunning });
+    return false;
+  }
+  if (message && message.type === "PING") {
+    sendResponse({ ok: true, isRunning });
+    return false;
+  }
   return false;
 });
+
+// Chrome can terminate an idle MV3 service worker and restart it later
+// on the next event; any in-flight batch loop (and its in-memory
+// isRunning/cancelRequested flags) is lost when that happens, which
+// would otherwise leave batchStatus stuck at running:true forever with
+// nothing left to respond to "중지". This runs once whenever the
+// worker starts up and repairs that stale state.
+(async () => {
+  const status = await getBatchStatus();
+  if (status.running && !isRunning) {
+    await setBatchStatus({ running: false, error: "interrupted" });
+  }
+})();

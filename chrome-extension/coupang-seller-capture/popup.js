@@ -202,6 +202,10 @@ function renderBatchStatus(status) {
     progressEl.textContent = "이 페이지에서 상품 링크를 찾지 못했습니다. 쿠팡 검색/카테고리 목록 페이지에서 사용해주세요.";
   } else if (status.error === "listing_read_failed") {
     progressEl.textContent = "목록 페이지를 읽는 데 실패했습니다. 페이지를 새로고침한 뒤 다시 시도해주세요.";
+  } else if (status.error === "interrupted") {
+    progressEl.innerHTML = `크롬이 확장프로그램을 잠시 재시작해 작업이 중단됐습니다 (<b>${status.done}</b> / ${status.total}건까지 저장됨). 필요하면 다시 시작해주세요.`;
+  } else if (status.error === "cancelled") {
+    progressEl.innerHTML = `중지됨: <b>${status.done}</b> / ${status.total}건까지 처리`;
   } else if (status.total > 0) {
     const failedText = status.failed > 0 ? `, 실패 ${status.failed}건` : "";
     progressEl.innerHTML = `완료: <b>${status.done}</b> / ${status.total}건 처리${failedText}`;
@@ -242,13 +246,29 @@ async function handleBatchStart() {
   );
   if (!ok) return;
 
-  await chrome.runtime.sendMessage({ type: "START_BATCH", sourceTabId: tab.id });
+  const response = await chrome.runtime.sendMessage({ type: "START_BATCH", sourceTabId: tab.id });
+  if (response && response.ok === false) {
+    setStatus("이미 자동 캡처가 진행 중입니다.", "error");
+    return;
+  }
   setStatus("자동 캡처를 시작했습니다.", "ok");
 }
 
 async function handleBatchStop() {
-  await chrome.storage.local.set({ batchCancelRequested: true });
-  setStatus("중지 요청을 보냈습니다. 진행 중인 상품까지 마치고 멈춥니다.", "");
+  const stopBtn = document.getElementById("batchStopBtn");
+  stopBtn.disabled = true;
+  setStatus("중지 처리 중...", "");
+  const response = await chrome.runtime.sendMessage({ type: "STOP_BATCH" });
+  stopBtn.disabled = false;
+  if (response && response.wasRunning === false) {
+    setStatus("이미 멈춰 있습니다.", "");
+    const { batchStatus } = await chrome.storage.local.get("batchStatus");
+    if (batchStatus && batchStatus.running) {
+      await chrome.storage.local.set({ batchStatus: { ...batchStatus, running: false, error: "interrupted" } });
+    }
+  } else {
+    setStatus("중지 요청을 보냈습니다. 진행 중인 상품을 마치는 대로 멈춥니다.", "");
+  }
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -257,6 +277,13 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   const { batchStatus } = await chrome.storage.local.get("batchStatus");
   renderBatchStatus(batchStatus);
+
+  if (batchStatus && batchStatus.running) {
+    // The stored state says a batch is running; ping the background
+    // worker so it can wake up (if Chrome terminated it) and repair
+    // stale "running" state left over from an interrupted batch.
+    chrome.runtime.sendMessage({ type: "PING" }, () => void chrome.runtime.lastError);
+  }
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
