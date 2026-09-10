@@ -130,6 +130,30 @@ function clickShippingTabIfPresent() {
   return false;
 }
 
+// Runs on a Coupang search/category listing page. Clicks the site's
+// own "판매자로켓" filter chip/checkbox if one is visible, so the
+// search results are filtered by Coupang's own (authoritative) logic
+// instead of relying only on scanning rendered badge text — a badge
+// shown as an icon with no text would be invisible to that scan.
+// Returns whether a filter control was found and clicked.
+function clickRocketFilterIfPresent() {
+  const norm = (s) => (s || "").replace(/\s+/g, "");
+  const candidates = Array.from(document.querySelectorAll("label, button, a, li, div, span"));
+  const target = candidates.find((el) => {
+    if (el.children && el.children.length > 3) return false;
+    return norm(el.textContent) === "판매자로켓";
+  });
+  if (!target) return false;
+
+  const input = target.querySelector && target.querySelector('input[type="checkbox"], input[type="radio"]');
+  if (input) {
+    input.click();
+  } else {
+    target.click();
+  }
+  return true;
+}
+
 // Walks up from a product anchor to the largest ancestor that still
 // belongs to just that one product card — stops as soon as a parent
 // would span more than one product anchor (i.e. the shared list

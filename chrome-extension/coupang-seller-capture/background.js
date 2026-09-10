@@ -151,6 +151,17 @@ async function fetchKeywordProductLinks(keyword, rocketOnly) {
       return { links: [], blocked: true };
     }
 
+    if (rocketOnly) {
+      const clicked = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: clickRocketFilterIfPresent,
+      });
+      if (clicked && clicked[0] && clicked[0].result) {
+        await delayWithJitter(1000);
+        if (cancelRequested) return { links: [], blocked: false };
+      }
+    }
+
     const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: findProductLinksOnListingPage,
@@ -307,6 +318,16 @@ async function startBatch(sourceTabId, rocketOnly) {
 
   let links = [];
   try {
+    if (rocketOnly) {
+      const clicked = await chrome.scripting.executeScript({
+        target: { tabId: sourceTabId },
+        func: clickRocketFilterIfPresent,
+      });
+      if (clicked && clicked[0] && clicked[0].result) {
+        await delayWithJitter(1000);
+      }
+    }
+
     const linkResults = await chrome.scripting.executeScript({
       target: { tabId: sourceTabId },
       func: findProductLinksOnListingPage,

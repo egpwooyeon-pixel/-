@@ -312,6 +312,16 @@ async function handleBatchStart() {
 
   let previewLinks = [];
   try {
+    if (rocketOnly) {
+      const clicked = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: clickRocketFilterIfPresent,
+      });
+      if (clicked && clicked[0] && clicked[0].result) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+
     const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: findProductLinksOnListingPage,
