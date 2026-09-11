@@ -15,6 +15,12 @@
  * "상품키(중복확인용)" 열을 기준으로 걸러낸다.
  */
 
+// 스프레드시트 안의 "확장 프로그램 > Apps Script"로 만든 스크립트라면
+// 비워두세요 — 이 스크립트가 들어있는 시트를 자동으로 씁니다.
+// script.google.com에서 독립 프로젝트로 만든 경우에만, 시트 URL의
+// https://docs.google.com/spreadsheets/d/이 부분/edit 을 여기에 붙여넣으세요.
+var SPREADSHEET_ID = "";
+
 var SHEET_NAME = "판매자정보";
 
 var HEADERS = [
@@ -137,7 +143,9 @@ function readExistingKeys(sheet) {
 }
 
 function getOrCreateSheet() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = SPREADSHEET_ID
+    ? SpreadsheetApp.openById(SPREADSHEET_ID)
+    : SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName(SHEET_NAME);
   if (!sheet) sheet = ss.insertSheet(SHEET_NAME);
   return sheet;
