@@ -149,10 +149,22 @@ async function handleCapture() {
     return;
   }
 
+  record.sheetSynced = false;
   records.push(record);
   await saveRecords(records);
   renderList(records);
   setStatus(`캡처 완료: ${record.sellerName || "상호 미확인"}`, "ok");
+
+  const syncResult = await postRecordsToSheet([record]).catch(() => ({ ok: false }));
+  if (syncResult && syncResult.ok) {
+    record.sheetSynced = true;
+    const latest = await getRecords();
+    const idx = latest.findIndex((r) => extractCapturedItemKey(r.pageUrl) === key);
+    if (idx !== -1) latest[idx].sheetSynced = true;
+    await saveRecords(latest);
+    renderList(latest);
+    setStatus(`캡처 완료 (구글시트 반영됨): ${record.sellerName || "상호 미확인"}`, "ok");
+  }
 }
 
 async function handleDownload() {
@@ -214,6 +226,63 @@ async function handleClear() {
   await saveRecords([]);
   renderList([]);
   setStatus("전체 삭제했습니다.", "ok");
+}
+
+async function renderSheetSyncStatus() {
+  const el = document.getElementById("sheetSyncStatus");
+  const url = await getSheetWebAppUrl();
+  if (!url) {
+    el.textContent = "아직 구글시트가 연동되지 않았습니다.";
+    return;
+  }
+  const records = await getRecords();
+  const unsynced = records.filter((r) => !r.sheetSynced).length;
+  el.textContent = unsynced > 0 ? `동기화 대기 중: ${unsynced}건` : "모두 동기화됨";
+}
+
+async function handleSaveSheetUrl() {
+  const input = document.getElementById("sheetUrlInput");
+  const url = input.value.trim();
+  if (url && !/^https:\/\/script\.google(usercontent)?\.com\//.test(url)) {
+    setStatus("Apps Script 웹앱 URL 형식이 맞는지 확인해주세요 (script.google.com으로 시작).", "error");
+    return;
+  }
+  await chrome.storage.local.set({ sheetWebAppUrl: url });
+  setStatus(url ? "구글시트 URL을 저장했습니다." : "구글시트 연동을 해제했습니다.", "ok");
+  await renderSheetSyncStatus();
+}
+
+async function handleSyncNow() {
+  const url = await getSheetWebAppUrl();
+  if (!url) {
+    setStatus("먼저 구글시트 웹앱 URL을 저장해주세요.", "error");
+    return;
+  }
+  const records = await getRecords();
+  const unsynced = records.filter((r) => !r.sheetSynced);
+  if (unsynced.length === 0) {
+    setStatus("동기화할 항목이 없습니다.", "ok");
+    return;
+  }
+
+  setStatus(`구글시트로 ${unsynced.length}건 동기화 중...`, "");
+  const result = await postRecordsToSheet(unsynced);
+
+  if (result.ok) {
+    const syncedKeys = new Set(unsynced.map((r) => extractCapturedItemKey(r.pageUrl)));
+    const latest = await getRecords();
+    latest.forEach((r) => {
+      if (syncedKeys.has(extractCapturedItemKey(r.pageUrl))) r.sheetSynced = true;
+    });
+    await saveRecords(latest);
+    renderList(latest);
+    setStatus(`동기화 완료: ${result.added}건`, "ok");
+  } else if (result.reason === "response_not_ok") {
+    setStatus(`동기화 중 일부만 반영됐습니다 (${result.added}건). URL/배포 설정을 확인해주세요.`, "error");
+  } else {
+    setStatus("동기화에 실패했습니다. 네트워크 또는 URL을 확인해주세요.", "error");
+  }
+  await renderSheetSyncStatus();
 }
 
 function renderBatchStatus(status) {
@@ -426,6 +495,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   const { batchStatus } = await chrome.storage.local.get("batchStatus");
   renderBatchStatus(batchStatus);
 
+  document.getElementById("sheetUrlInput").value = await getSheetWebAppUrl();
+  renderSheetSyncStatus();
+
   if (batchStatus && batchStatus.running) {
     // The stored state says a batch is running; ping the background
     // worker so it can wake up (if Chrome terminated it) and repair
@@ -436,7 +508,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
     if (changes.batchStatus) renderBatchStatus(changes.batchStatus.newValue);
-    if (changes.records) renderList(Array.isArray(changes.records.newValue) ? changes.records.newValue : []);
+    if (changes.records) {
+      renderList(Array.isArray(changes.records.newValue) ? changes.records.newValue : []);
+      renderSheetSyncStatus();
+    }
   });
 
   document.getElementById("captureBtn").addEventListener("click", handleCapture);
@@ -447,4 +522,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("batchStartBtn").addEventListener("click", handleBatchStart);
   document.getElementById("keywordStartBtn").addEventListener("click", handleKeywordStart);
   document.getElementById("batchStopBtn").addEventListener("click", handleBatchStop);
+  document.getElementById("saveSheetUrlBtn").addEventListener("click", handleSaveSheetUrl);
+  document.getElementById("syncNowBtn").addEventListener("click", handleSyncNow);
 });

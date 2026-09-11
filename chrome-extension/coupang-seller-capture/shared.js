@@ -32,6 +32,48 @@ function extractCapturedItemKey(url) {
   }
 }
 
+// --- Google Sheets sync helpers -------------------------------------
+// Extension-context only (chrome.storage / fetch aren't available
+// inside an injected page script) — never pass these to
+// chrome.scripting.executeScript. Used from both popup.js and
+// background.js, which is why they live here instead of being
+// duplicated in each.
+
+async function getSheetWebAppUrl() {
+  const { sheetWebAppUrl } = await chrome.storage.local.get("sheetWebAppUrl");
+  return sheetWebAppUrl || "";
+}
+
+// Sends records to the Apps Script web app in chunks (its execution
+// time/payload limits make one huge POST risky). Uses
+// "text/plain" as the content type on purpose: a JSON content type
+// triggers a CORS preflight (OPTIONS) request that Apps Script web
+// apps don't handle, which would make every sync silently fail.
+async function postRecordsToSheet(records) {
+  const url = await getSheetWebAppUrl();
+  if (!url) return { ok: false, reason: "no_url" };
+  if (!records || records.length === 0) return { ok: true, added: 0 };
+
+  const CHUNK_SIZE = 100;
+  let added = 0;
+  for (let i = 0; i < records.length; i += CHUNK_SIZE) {
+    const chunk = records.slice(i, i + CHUNK_SIZE);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ records: chunk }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!data || !data.ok) return { ok: false, reason: "response_not_ok", added };
+      added += chunk.length;
+    } catch (err) {
+      return { ok: false, reason: "network_error", added };
+    }
+  }
+  return { ok: true, added };
+}
+
 // Runs on any Coupang page. Detects known access-blocked pages —
 // Coupang's own "사용권한이 없습니다" page, and the Akamai
 // (errors.edgesuite.net) "Access Denied" edge block that can trigger

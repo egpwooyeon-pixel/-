@@ -69,14 +69,32 @@ async function setBatchStatus(patch) {
 // shortcut twice, running "열려있는 탭 모두 캡처" again, the same
 // product surfacing under two different keywords — doesn't pile up
 // duplicate rows in the CSV. Returns whether it actually added a row.
+//
+// Also best-effort pushes the new record straight to the configured
+// Google Sheet (see postRecordsToSheet in shared.js). If that isn't
+// configured or the request fails, the record just stays
+// sheetSynced: false — the "지금 동기화" button in the popup catches
+// up anything still unsynced, so a flaky network never loses data.
 async function appendRecord(record) {
   const { records } = await chrome.storage.local.get("records");
   const list = Array.isArray(records) ? records : [];
   const key = extractCapturedItemKey(record.pageUrl);
   const alreadyCaptured = list.some((r) => extractCapturedItemKey(r.pageUrl) === key);
   if (alreadyCaptured) return { added: false };
-  list.push(record);
+
+  const newRecord = { ...record, sheetSynced: false };
+  list.push(newRecord);
   await chrome.storage.local.set({ records: list });
+
+  const syncResult = await postRecordsToSheet([newRecord]).catch(() => ({ ok: false }));
+  if (syncResult && syncResult.ok) {
+    const { records: latest } = await chrome.storage.local.get("records");
+    const latestList = Array.isArray(latest) ? latest : [];
+    const idx = latestList.findIndex((r) => extractCapturedItemKey(r.pageUrl) === key);
+    if (idx !== -1) latestList[idx].sheetSynced = true;
+    await chrome.storage.local.set({ records: latestList });
+  }
+
   return { added: true };
 }
 

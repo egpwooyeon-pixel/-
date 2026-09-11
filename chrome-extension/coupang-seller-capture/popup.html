@@ -63,6 +63,21 @@
     border: 1px solid #e5e7eb;
   }
   #dedupeBtn:hover { background: #e5e7eb; }
+  #sheetUrlInput {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    font-size: 12px;
+    margin-bottom: 6px;
+    box-sizing: border-box;
+  }
+  #saveSheetUrlBtn, #syncNowBtn {
+    background: #f3f4f6;
+    color: #374151;
+    border: 1px solid #e5e7eb;
+  }
+  #saveSheetUrlBtn:hover, #syncNowBtn:hover { background: #e5e7eb; }
   #status {
     min-height: 18px;
     margin: 4px 0 10px;
@@ -241,6 +256,16 @@
   </div>
   <div class="progress-bar" id="progressBar"><div class="progress-bar-fill" id="progressBarFill"></div></div>
   <div id="batchProgress"></div>
+
+  <hr />
+  <div class="section-title">구글 시트 연동</div>
+  <div class="section-desc">Apps Script 웹앱 URL을 등록하면, 캡처할 때마다 자동으로 구글 스프레드시트에 실시간으로 쌓입니다. 설정 방법은 README를 참고하세요.</div>
+  <input type="text" id="sheetUrlInput" placeholder="https://script.google.com/macros/s/.../exec" />
+  <div class="row-buttons">
+    <button id="saveSheetUrlBtn">URL 저장</button>
+    <button id="syncNowBtn">지금 동기화</button>
+  </div>
+  <div id="sheetSyncStatus" class="section-desc" style="margin-top:-2px;"></div>
 
   <hr />
   <div class="count">저장된 항목: <b id="countNum">0</b>건</div>
