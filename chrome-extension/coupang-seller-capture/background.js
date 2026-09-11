@@ -82,7 +82,7 @@ async function appendRecord(record) {
   const alreadyCaptured = list.some((r) => extractCapturedItemKey(r.pageUrl) === key);
   if (alreadyCaptured) return { added: false };
 
-  const newRecord = { ...record, sheetSynced: false };
+  const newRecord = { ...record, itemKey: key, sheetSynced: false };
   list.push(newRecord);
   await chrome.storage.local.set({ records: list });
 

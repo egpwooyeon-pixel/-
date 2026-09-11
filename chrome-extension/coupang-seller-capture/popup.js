@@ -149,6 +149,7 @@ async function handleCapture() {
     return;
   }
 
+  record.itemKey = key;
   record.sheetSynced = false;
   records.push(record);
   await saveRecords(records);
@@ -276,7 +277,8 @@ async function handleSyncNow() {
     });
     await saveRecords(latest);
     renderList(latest);
-    setStatus(`동기화 완료: ${result.added}건`, "ok");
+    const dupText = result.duplicates > 0 ? ` (시트에 이미 있던 중복 ${result.duplicates}건은 건너뜀)` : "";
+    setStatus(`동기화 완료: ${result.added}건${dupText}`, "ok");
   } else if (result.reason === "response_not_ok") {
     setStatus(`동기화 중 일부만 반영됐습니다 (${result.added}건). URL/배포 설정을 확인해주세요.`, "error");
   } else {

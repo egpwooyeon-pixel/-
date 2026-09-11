@@ -7,6 +7,12 @@
  * 3. 배포 > 새 배포 > 웹 앱으로 배포 (실행: 나 / 액세스: 전체)
  * 4. 배포 후 나오는 웹 앱 URL을 크롬 확장프로그램 팝업의
  *    "구글 시트 연동" 칸에 붙여넣기
+ *
+ * 중복 방지는 확장프로그램 쪽(로컬)에서도 하지만, "지금 동기화"를
+ * 다시 누르거나 로컬 데이터를 지운 뒤 같은 상품을 또 캡처하거나,
+ * 같은 시트를 여러 브라우저에서 같이 쓰는 경우엔 확장프로그램만으로는
+ * 막을 수 없다. 그래서 마지막 방어선으로 이 시트에서도 한 번 더
+ * "상품키(중복확인용)" 열을 기준으로 걸러낸다.
  */
 
 var SHEET_NAME = "판매자정보";
@@ -23,6 +29,7 @@ var HEADERS = [
   "구매안전서비스",
   "상품명(탭 제목)",
   "상품 URL",
+  "상품키(중복확인용)",
 ];
 
 var FIELD_ORDER = [
@@ -38,6 +45,8 @@ var FIELD_ORDER = [
   "productTitle",
   "pageUrl",
 ];
+
+var KEY_COLUMN_INDEX = HEADERS.length; // 1-based, last column
 
 function doPost(e) {
   try {
@@ -59,17 +68,32 @@ function doPost(e) {
     var sheet = getOrCreateSheet();
     ensureHeader(sheet);
 
-    var rows = records.map(function (record) {
-      return FIELD_ORDER.map(function (key) {
-        return record && record[key] != null ? record[key] : "";
+    var existingKeys = readExistingKeys(sheet);
+    var rows = [];
+    var duplicates = 0;
+
+    records.forEach(function (record) {
+      var key = itemKeyOf(record);
+      if (key && existingKeys[key]) {
+        duplicates++;
+        return;
+      }
+      if (key) existingKeys[key] = true; // also catches dupes within this same batch
+
+      var row = FIELD_ORDER.map(function (field) {
+        return record && record[field] != null ? record[field] : "";
       });
+      row.push(key);
+      rows.push(row);
     });
 
-    sheet
-      .getRange(sheet.getLastRow() + 1, 1, rows.length, FIELD_ORDER.length)
-      .setValues(rows);
+    if (rows.length > 0) {
+      sheet
+        .getRange(sheet.getLastRow() + 1, 1, rows.length, HEADERS.length)
+        .setValues(rows);
+    }
 
-    return jsonResponse({ ok: true, added: rows.length });
+    return jsonResponse({ ok: true, added: rows.length, duplicates: duplicates });
   } catch (err) {
     return jsonResponse({ ok: false, error: String(err) });
   }
@@ -82,6 +106,36 @@ function doGet(e) {
   });
 }
 
+// The extension already computes and sends record.itemKey (see
+// extractCapturedItemKey in shared.js). This is only a fallback for
+// records captured before that field existed.
+function itemKeyOf(record) {
+  if (record && record.itemKey) return String(record.itemKey);
+  var url = record && record.pageUrl;
+  if (!url) return "";
+
+  var vendorMatch = url.match(/[?&]vendorItemId=([^&]+)/);
+  if (vendorMatch) return "v:" + vendorMatch[1];
+  var itemMatch = url.match(/[?&]itemId=([^&]+)/);
+  if (itemMatch) return "i:" + itemMatch[1];
+  var productMatch = url.match(/\/vp\/products\/(\d+)/);
+  if (productMatch) return "p:" + productMatch[1];
+  return url;
+}
+
+function readExistingKeys(sheet) {
+  var lastRow = sheet.getLastRow();
+  var keys = {};
+  if (lastRow < 2) return keys;
+
+  var values = sheet.getRange(2, KEY_COLUMN_INDEX, lastRow - 1, 1).getValues();
+  values.forEach(function (row) {
+    var key = row[0];
+    if (key) keys[String(key)] = true;
+  });
+  return keys;
+}
+
 function getOrCreateSheet() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName(SHEET_NAME);
@@ -89,10 +143,23 @@ function getOrCreateSheet() {
   return sheet;
 }
 
+// Writes the header row on a brand-new sheet. On a sheet from an
+// older version of this script (fewer columns — e.g. before the
+// "상품키" dedup column existed), it only fills in the missing
+// trailing header cells rather than touching existing data, so
+// re-pasting an updated Code.gs into an already-populated sheet
+// upgrades it in place.
 function ensureHeader(sheet) {
   if (sheet.getLastRow() === 0) {
     sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
     sheet.setFrozenRows(1);
+    return;
+  }
+  var lastCol = sheet.getLastColumn();
+  if (lastCol < HEADERS.length) {
+    sheet
+      .getRange(1, lastCol + 1, 1, HEADERS.length - lastCol)
+      .setValues([HEADERS.slice(lastCol)]);
   }
 }
 

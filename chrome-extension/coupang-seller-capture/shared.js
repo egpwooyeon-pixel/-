@@ -56,6 +56,7 @@ async function postRecordsToSheet(records) {
 
   const CHUNK_SIZE = 100;
   let added = 0;
+  let duplicates = 0;
   for (let i = 0; i < records.length; i += CHUNK_SIZE) {
     const chunk = records.slice(i, i + CHUNK_SIZE);
     try {
@@ -65,13 +66,14 @@ async function postRecordsToSheet(records) {
         body: JSON.stringify({ records: chunk }),
       });
       const data = await res.json().catch(() => null);
-      if (!data || !data.ok) return { ok: false, reason: "response_not_ok", added };
-      added += chunk.length;
+      if (!data || !data.ok) return { ok: false, reason: "response_not_ok", added, duplicates };
+      added += data.added != null ? data.added : chunk.length;
+      duplicates += data.duplicates || 0;
     } catch (err) {
-      return { ok: false, reason: "network_error", added };
+      return { ok: false, reason: "network_error", added, duplicates };
     }
   }
-  return { ok: true, added };
+  return { ok: true, added, duplicates };
 }
 
 // Runs on any Coupang page. Detects known access-blocked pages —
