@@ -130,13 +130,31 @@ function populateColumnPickers(headers, detected) {
   document.getElementById("columnPickers").classList.add("active");
 }
 
+// Dedupes by email (case-insensitive) within the uploaded file itself,
+// keeping the first occurrence — separate from composedLog, which
+// tracks rows already handled across uploads/sessions.
 function buildRowsFromColumns(json, emailKey, productKey) {
-  return json
+  const all = json
     .map((r) => ({
       email: String(r[emailKey] || "").trim(),
       productRaw: String(r[productKey] || "").trim(),
     }))
     .filter((r) => r.email);
+
+  const seen = new Set();
+  const deduped = [];
+  let duplicateCount = 0;
+  all.forEach((r) => {
+    const key = r.email.toLowerCase();
+    if (seen.has(key)) {
+      duplicateCount++;
+      return;
+    }
+    seen.add(key);
+    deduped.push(r);
+  });
+
+  return { rows: deduped, duplicateCount };
 }
 
 function renderRows() {
@@ -144,22 +162,27 @@ function renderRows() {
   tbody.innerHTML = "";
 
   if (parsedRows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="3" class="empty">엑셀을 업로드하면 여기에 목록이 표시됩니다.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">엑셀을 업로드하면 여기에 목록이 표시됩니다.</td></tr>';
     return;
   }
 
   parsedRows.forEach((row, i) => {
     const tr = document.createElement("tr");
+    const isDone = () => !!composedLog[row.email];
+    const applyDoneStyle = () => tr.classList.toggle("done-row", isDone());
+
+    const doneTd = document.createElement("td");
+    doneTd.className = "done";
+    const doneCheckbox = document.createElement("input");
+    doneCheckbox.type = "checkbox";
+    doneCheckbox.checked = isDone();
+    doneCheckbox.title = "완료 표시 (자동으로도 체크되지만, 직접 체크/해제할 수 있습니다)";
+    doneTd.appendChild(doneCheckbox);
+    tr.appendChild(doneTd);
 
     const emailTd = document.createElement("td");
     emailTd.className = "email";
     emailTd.textContent = row.email;
-    if (composedLog[row.email]) {
-      const badge = document.createElement("span");
-      badge.className = "status-badge";
-      badge.textContent = "이전에 작성함";
-      emailTd.appendChild(badge);
-    }
     tr.appendChild(emailTd);
 
     const productTd = document.createElement("td");
@@ -191,9 +214,30 @@ function renderRows() {
     previewTr.className = "preview-row";
     previewTr.style.display = "none";
     const previewTd = document.createElement("td");
-    previewTd.colSpan = 3;
+    previewTd.colSpan = 4;
     previewTr.appendChild(previewTd);
     tbody.appendChild(previewTr);
+
+    const refreshComposeBtn = () => {
+      if (isDone()) {
+        composeBtn.classList.add("done");
+        composeBtn.textContent = "✓ 작성창 열림 (다시 열기)";
+      } else {
+        composeBtn.classList.remove("done");
+        composeBtn.textContent = "Gmail로 작성하기";
+      }
+    };
+
+    doneCheckbox.addEventListener("change", async () => {
+      if (doneCheckbox.checked) {
+        composedLog[row.email] = composedLog[row.email] || { composedAt: new Date().toISOString(), manual: true };
+      } else {
+        delete composedLog[row.email];
+      }
+      await saveComposedLog();
+      applyDoneStyle();
+      refreshComposeBtn();
+    });
 
     previewBtn.addEventListener("click", () => {
       const visible = previewTr.style.display !== "none";
@@ -217,14 +261,13 @@ function renderRows() {
 
       composedLog[row.email] = { composedAt: new Date().toISOString(), subject: msg.subject };
       await saveComposedLog();
-      composeBtn.classList.add("done");
-      composeBtn.textContent = "✓ 작성창 열림";
+      doneCheckbox.checked = true;
+      applyDoneStyle();
+      refreshComposeBtn();
     });
 
-    if (composedLog[row.email]) {
-      composeBtn.classList.add("done");
-      composeBtn.textContent = "✓ 작성창 열림 (다시 열기)";
-    }
+    applyDoneStyle();
+    refreshComposeBtn();
   });
 }
 
@@ -265,8 +308,10 @@ async function handleFile(file) {
 
     if (detected.email && detected.product) {
       document.getElementById("columnPickers").classList.remove("active");
-      parsedRows = buildRowsFromColumns(json, detected.email, detected.product);
-      setStatus(`${parsedRows.length}건을 불러왔습니다. (이메일 컬럼: "${detected.email}", 상품명 컬럼: "${detected.product}")`);
+      const result = buildRowsFromColumns(json, detected.email, detected.product);
+      parsedRows = result.rows;
+      const dupText = result.duplicateCount > 0 ? `, 중복 이메일 ${result.duplicateCount}건 제거됨` : "";
+      setStatus(`${parsedRows.length}건을 불러왔습니다${dupText}. (이메일 컬럼: "${detected.email}", 상품명 컬럼: "${detected.product}")`);
       renderRows();
     } else {
       populateColumnPickers(headers, detected);
@@ -284,8 +329,10 @@ function applyManualColumns() {
   const emailKey = document.getElementById("emailColumnSelect").value;
   const productKey = document.getElementById("productColumnSelect").value;
   if (!window.__pendingJson || !emailKey || !productKey) return;
-  parsedRows = buildRowsFromColumns(window.__pendingJson, emailKey, productKey);
-  setStatus(`${parsedRows.length}건을 불러왔습니다.`);
+  const result = buildRowsFromColumns(window.__pendingJson, emailKey, productKey);
+  parsedRows = result.rows;
+  const dupText = result.duplicateCount > 0 ? `, 중복 이메일 ${result.duplicateCount}건 제거됨` : "";
+  setStatus(`${parsedRows.length}건을 불러왔습니다${dupText}.`);
   renderRows();
 }
 

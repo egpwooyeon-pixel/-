@@ -108,15 +108,10 @@
     color: #374151;
   }
   .empty { color: #9ca3af; padding: 20px 0; text-align: center; }
-  .status-badge {
-    display: inline-block;
-    font-size: 11px;
-    padding: 1px 6px;
-    border-radius: 10px;
-    background: #eef2ff;
-    color: #4338ca;
-    margin-left: 6px;
-  }
+  td.done { text-align: center; }
+  td.done input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
+  tr.done-row { background: #f0fdf4; }
+  tr.done-row td.email { color: #16a34a; }
 </style>
 </head>
 <body>
@@ -164,13 +159,14 @@
     <table id="rowsTable">
       <thead>
         <tr>
+          <th>완료</th>
           <th>이메일</th>
           <th>상품명 (수정 가능)</th>
           <th>작업</th>
         </tr>
       </thead>
       <tbody id="rowsBody">
-        <tr><td colspan="3" class="empty">엑셀을 업로드하면 여기에 목록이 표시됩니다.</td></tr>
+        <tr><td colspan="4" class="empty">엑셀을 업로드하면 여기에 목록이 표시됩니다.</td></tr>
       </tbody>
     </table>
   </div>
