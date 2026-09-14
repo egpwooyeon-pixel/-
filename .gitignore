@@ -17,3 +17,7 @@
 .DS_Store
 *.log
 npm-debug.log*
+
+# Apps Script files containing real third-party contact info / outreach
+# content — intentionally not committed, handed to the user directly instead
+chrome-extension/coupang-seller-capture/google-apps-script/EmailOutreach.gs
