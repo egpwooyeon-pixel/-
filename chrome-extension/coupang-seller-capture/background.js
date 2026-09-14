@@ -484,7 +484,24 @@ const MAIL_AUTOSEND_ALARM_NAME = "mailAutosendTick";
 
 async function getMailAutosendState() {
   const { mailAutosend } = await chrome.storage.local.get("mailAutosend");
-  return mailAutosend || { running: false, queue: [], countdownSeconds: 60, intervalMinutes: 30, processedCount: 0 };
+  return (
+    mailAutosend || {
+      running: false,
+      queue: [],
+      countdownSeconds: 60,
+      intervalMinutes: 30,
+      processedCount: 0,
+      dailyLimit: 0,
+      dailySentDate: "",
+      dailySentCount: 0,
+    }
+  );
+}
+
+function todayKey() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 async function setMailAutosendState(patch) {
@@ -518,6 +535,19 @@ async function processNextMailAutosendItem() {
     return;
   }
 
+  // Daily send cap (spam/account-suspension avoidance). The alarm keeps
+  // firing on its usual hourly-pace cadence regardless of the cap — once
+  // the calendar date rolls over, dailySentCount resets and sending just
+  // resumes on the next tick, no extra "resume tomorrow" logic needed.
+  const today = todayKey();
+  const dailySentCount = state.dailySentDate === today ? state.dailySentCount || 0 : 0;
+  if (state.dailySentDate !== today) {
+    await setMailAutosendState({ dailySentDate: today, dailySentCount: 0 });
+  }
+  if (state.dailyLimit > 0 && dailySentCount >= state.dailyLimit) {
+    return; // today's cap reached; try again on the next tick (which may be tomorrow)
+  }
+
   const item = state.queue[idx];
   const url = buildGmailComposeUrl(item.to, item.subject, item.body);
 
@@ -536,7 +566,12 @@ async function processNextMailAutosendItem() {
   const latest = await getMailAutosendState();
   const latestIdx = latest.queue.findIndex((q) => q.to === item.to && q.status === "pending");
   if (latestIdx !== -1) latest.queue[latestIdx].status = "opened";
-  await setMailAutosendState({ queue: latest.queue, processedCount: latest.processedCount + 1 });
+  await setMailAutosendState({
+    queue: latest.queue,
+    processedCount: latest.processedCount + 1,
+    dailySentDate: today,
+    dailySentCount: dailySentCount + 1,
+  });
 
   // Best-effort: mark the spreadsheet row red/bold so it's visible at a
   // glance which rows are already handled. Doesn't block/undo the
@@ -570,12 +605,16 @@ function computeIntervalMinutes(perHour) {
   return Math.max(1, Math.round(60 / count));
 }
 
-async function startMailAutosend(queue, countdownSeconds, perHour, sheetUrl) {
+async function startMailAutosend(queue, countdownSeconds, perHour, sheetUrl, dailyLimit) {
   const state = await getMailAutosendState();
   if (state.running) return { ok: false, reason: "already_running" };
 
   const intervalMinutes = computeIntervalMinutes(perHour);
 
+  // dailySentDate/dailySentCount are deliberately left untouched here
+  // (not reset to 0) — the daily cap tracks total sends across the whole
+  // day, including ones from a previous start/stop of this same tool
+  // earlier today, not just this one queue/batch.
   await setMailAutosendState({
     running: true,
     queue: queue.map((item) => ({ ...item, status: "pending" })),
@@ -584,6 +623,7 @@ async function startMailAutosend(queue, countdownSeconds, perHour, sheetUrl) {
     processedCount: 0,
     startedAt: Date.now(),
     sheetUrl: sheetUrl || "",
+    dailyLimit: dailyLimit || 0,
   });
 
   await chrome.alarms.create(MAIL_AUTOSEND_ALARM_NAME, { periodInMinutes: intervalMinutes });
@@ -635,7 +675,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
   if (message && message.type === "START_MAIL_AUTOSEND" && Array.isArray(message.queue)) {
-    startMailAutosend(message.queue, message.countdownSeconds, message.perHour, message.sheetUrl).then(sendResponse);
+    startMailAutosend(message.queue, message.countdownSeconds, message.perHour, message.sheetUrl, message.dailyLimit).then(
+      sendResponse
+    );
     return true; // async response
   }
   if (message && message.type === "STOP_MAIL_AUTOSEND") {

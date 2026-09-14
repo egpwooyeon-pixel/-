@@ -1,5 +1,5 @@
 const DEFAULT_SUBJECT_TEMPLATE = "{{PRODUCT}} 공동구매/라이브방송 제안드립니다";
-const DEFAULT_BODY_TEMPLATE = `{{PRODUCT}} 대표님. 안녕하세요. 대표님 좋은 상품 판매 한번 해보고 싶어서 메일로 연락드렸습니다 :)
+const DEFAULT_BODY_TEMPLATE = `{{PRODUCT}} 대표님. {{GREETING}} 좋은 상품 판매 한번 해보고 싶어서 메일로 연락드렸습니다 :)
 
 저는 13년차 마케터로 온라인 셀러를 준비하고 있는 {{NAME}}입니다.
 
@@ -7,8 +7,20 @@ const DEFAULT_BODY_TEMPLATE = `{{PRODUCT}} 대표님. 안녕하세요. 대표님
 
 혹시 협력 가능하시면 이 메일로 회신 부탁드립니다 🙂
 
-감사합니다.
+{{CLOSING}}
 {{NAME}} 드림`;
+
+// Rotated per row (by index, not randomly — so previews stay stable and
+// reproducible) so that rows whose product name happens to collide
+// (e.g. guessProductName() bucketing several different items into the
+// same short category like "서랍장") don't end up sending byte-identical
+// subject/body to different recipients. Real, visible wording variation —
+// not an invisible trick — since Gmail's spam filters weigh repeated
+// near-identical content heavily. Only takes effect where the template
+// actually contains {{GREETING}}/{{CLOSING}}; a custom template without
+// those tokens is left exactly as typed.
+const GREETING_VARIANTS = ["안녕하세요.", "안녕하세요, 대표님.", "반갑습니다, 대표님."];
+const CLOSING_VARIANTS = ["감사합니다.", "확인 부탁드립니다. 감사합니다.", "좋은 하루 보내세요. 감사합니다."];
 
 let parsedHeaders = [];
 let parsedRows = []; // [{ email, productRaw }]
@@ -26,6 +38,7 @@ async function loadSettings() {
     composedLog: storedLog,
     mailAutosendCountdownSeconds,
     mailAutosendPerHour,
+    mailAutosendDailyLimit,
     mailSheetWebAppUrl,
   } = await chrome.storage.local.get([
     "senderName",
@@ -34,6 +47,7 @@ async function loadSettings() {
     "composedLog",
     "mailAutosendCountdownSeconds",
     "mailAutosendPerHour",
+    "mailAutosendDailyLimit",
     "mailSheetWebAppUrl",
   ]);
   document.getElementById("senderName").value = senderName || "";
@@ -41,8 +55,16 @@ async function loadSettings() {
   document.getElementById("bodyTemplate").value = bodyTemplate || DEFAULT_BODY_TEMPLATE;
   document.getElementById("countdownSeconds").value = mailAutosendCountdownSeconds || 60;
   document.getElementById("perHourCount").value = mailAutosendPerHour || 2;
+  document.getElementById("dailyLimitCount").value = mailAutosendDailyLimit != null ? mailAutosendDailyLimit : 80;
   document.getElementById("mailSheetUrlInput").value = mailSheetWebAppUrl || "";
   composedLog = storedLog || {};
+}
+
+function resetTemplateToDefault() {
+  document.getElementById("subjectTemplate").value = DEFAULT_SUBJECT_TEMPLATE;
+  document.getElementById("bodyTemplate").value = DEFAULT_BODY_TEMPLATE;
+  saveSettings();
+  setStatus("템플릿을 스팸 방지 기본값으로 초기화했습니다.");
 }
 
 function getMailSheetUrl() {
@@ -61,16 +83,28 @@ async function saveSettings() {
     bodyTemplate: document.getElementById("bodyTemplate").value,
     mailAutosendCountdownSeconds: parseInt(document.getElementById("countdownSeconds").value, 10) || 60,
     mailAutosendPerHour: getPerHourCount(),
+    mailAutosendDailyLimit: getDailyLimit(),
   });
 }
 
 // Chrome clamps periodic alarms to a 1-minute minimum, so more than
 // 60/hour isn't achievable — cap the input so the UI doesn't promise
-// a rate the alarm can't actually hit.
+// a rate the alarm can't actually hit. Above this, Gmail's own spam/rate
+// limiting becomes the real constraint anyway (see the warning in the UI).
 function getPerHourCount() {
   const raw = parseInt(document.getElementById("perHourCount").value, 10);
   if (!Number.isFinite(raw) || raw < 1) return 2;
   return Math.min(raw, 60);
+}
+
+// null/0 = no daily cap (autosend just keeps going by the hourly pace
+// alone). A positive number pauses autosend once that many have been
+// opened today and lets it resume automatically the next calendar day —
+// see background.js's daily-limit bookkeeping in processNextMailAutosendItem.
+function getDailyLimit() {
+  const raw = parseInt(document.getElementById("dailyLimitCount").value, 10);
+  if (!Number.isFinite(raw) || raw <= 0) return 0;
+  return raw;
 }
 
 function getIntervalMinutes() {
@@ -80,8 +114,15 @@ function getIntervalMinutes() {
 function renderIntervalHint() {
   const perHour = getPerHourCount();
   const intervalMinutes = getIntervalMinutes();
-  document.getElementById("intervalHint").textContent =
-    `약 ${intervalMinutes}분 간격으로 1건씩 열립니다 (시간당 약 ${Math.round(60 / intervalMinutes)}건).`;
+  const dailyLimit = getDailyLimit();
+  const el = document.getElementById("intervalHint");
+  let text = `약 ${intervalMinutes}분 간격으로 1건씩 열립니다 (시간당 약 ${Math.round(60 / intervalMinutes)}건).`;
+  text += dailyLimit > 0 ? ` 하루 ${dailyLimit}건에 도달하면 자동으로 멈췄다가 다음날 이어서 보냅니다.` : " 하루 한도 없음 — 스팸 방지를 위해 한도를 정해두는 걸 권장합니다.";
+  el.textContent = text;
+  el.classList.toggle("warn-text", perHour > 20);
+  if (perHour > 20) {
+    el.textContent = "⚠️ 시간당 20통을 넘기면 스팸/계정 일시정지 위험이 커집니다. " + text;
+  }
 }
 
 async function saveComposedLog() {
@@ -260,13 +301,13 @@ function renderRows() {
         previewTr.style.display = "none";
         return;
       }
-      const msg = buildMessage(productInput.value);
+      const msg = buildMessage(productInput.value, i);
       previewTd.textContent = `제목: ${msg.subject}\n\n${msg.body}`;
       previewTr.style.display = "";
     });
 
     composeBtn.addEventListener("click", async () => {
-      const msg = buildMessage(productInput.value);
+      const msg = buildMessage(productInput.value, i);
       const url =
         "https://mail.google.com/mail/?view=cm&fs=1" +
         `&to=${encodeURIComponent(row.email)}` +
@@ -289,11 +330,19 @@ function renderRows() {
   });
 }
 
-function buildMessage(productName) {
+function buildMessage(productName, variantIndex) {
   const name = document.getElementById("senderName").value || "";
   const subjectTpl = document.getElementById("subjectTemplate").value || DEFAULT_SUBJECT_TEMPLATE;
   const bodyTpl = document.getElementById("bodyTemplate").value || DEFAULT_BODY_TEMPLATE;
-  const fill = (tpl) => tpl.split("{{PRODUCT}}").join(productName).split("{{NAME}}").join(name);
+  const idx = Number.isFinite(variantIndex) ? variantIndex : 0;
+  const greeting = GREETING_VARIANTS[idx % GREETING_VARIANTS.length];
+  const closing = CLOSING_VARIANTS[idx % CLOSING_VARIANTS.length];
+  const fill = (tpl) =>
+    tpl
+      .split("{{PRODUCT}}").join(productName)
+      .split("{{NAME}}").join(name)
+      .split("{{GREETING}}").join(greeting)
+      .split("{{CLOSING}}").join(closing);
   return { subject: fill(subjectTpl), body: fill(bodyTpl) };
 }
 
@@ -392,7 +441,7 @@ function buildAutosendQueue() {
   parsedRows.forEach((row, i) => {
     if (composedLog[row.email]) return;
     const productValue = productInputs[i] ? productInputs[i].value : guessProductName(row.productRaw);
-    const msg = buildMessage(productValue);
+    const msg = buildMessage(productValue, i);
     queue.push({ to: row.email, subject: msg.subject, body: msg.body, itemKey: row.itemKey || "" });
   });
   return queue;
@@ -411,9 +460,16 @@ async function renderAutosendStatus() {
   const done = state.queue.filter((q) => q.status !== "pending").length;
   const intervalMinutes = state.intervalMinutes || getIntervalMinutes();
   startBtn.disabled = !!state.running;
-  el.textContent = state.running
+  let text = state.running
     ? `자동 발송 진행 중: ${done} / ${total}건 처리됨 (${intervalMinutes}분마다 1건씩)`
     : `자동 발송 종료: ${done} / ${total}건까지 처리됨`;
+  if (state.running && state.dailyLimit > 0) {
+    text += ` — 오늘 ${state.dailySentCount || 0} / ${state.dailyLimit}건 발송`;
+    if ((state.dailySentCount || 0) >= state.dailyLimit) {
+      text += " (오늘 한도 도달, 내일 자동으로 이어서 보냅니다)";
+    }
+  }
+  el.textContent = text;
 }
 
 async function handleStartAutosend() {
@@ -424,18 +480,31 @@ async function handleStartAutosend() {
   }
   const countdownSeconds = parseInt(document.getElementById("countdownSeconds").value, 10) || 60;
   const perHour = getPerHourCount();
+  const dailyLimit = getDailyLimit();
   const intervalMinutes = getIntervalMinutes();
   const estimatedMinutes = (queue.length - 1) * intervalMinutes;
+  let warning = "";
+  if (perHour > 20) {
+    warning += "\n⚠️ 시간당 20통을 초과하면 스팸/계정 일시정지 위험이 커집니다. 정말 이대로 진행할까요?";
+  }
+  const dailyText = dailyLimit > 0 ? `, 하루 최대 ${dailyLimit}건` : " (하루 한도 없음)";
   const ok = window.confirm(
-    `${queue.length}건을 ${intervalMinutes}분 간격으로(시간당 약 ${perHour}건) 순서대로 Gmail 작성창을 열어 발송합니다.\n` +
+    `${queue.length}건을 ${intervalMinutes}분 간격으로(시간당 약 ${perHour}건${dailyText}) 순서대로 Gmail 작성창을 열어 발송합니다.\n` +
       `각 작성창은 ${countdownSeconds}초 동안 검토/수정할 수 있고, 그 후 자동으로 "보내기"가 눌립니다. 언제든 "지금 취소"로 막을 수 있습니다.\n` +
-      `모두 처리되기까지 대략 ${estimatedMinutes}분 걸립니다.\n시작할까요?`
+      `모두 처리되기까지 대략 ${estimatedMinutes}분 걸립니다 (하루 한도에 걸리면 며칠에 걸쳐 나눠 보내집니다).${warning}\n시작할까요?`
   );
   if (!ok) return;
 
   await saveSettings();
   const sheetUrl = getMailSheetUrl();
-  const response = await chrome.runtime.sendMessage({ type: "START_MAIL_AUTOSEND", queue, countdownSeconds, perHour, sheetUrl });
+  const response = await chrome.runtime.sendMessage({
+    type: "START_MAIL_AUTOSEND",
+    queue,
+    countdownSeconds,
+    perHour,
+    sheetUrl,
+    dailyLimit,
+  });
   if (response && response.ok === false) {
     setStatus("이미 자동 발송이 진행 중입니다.");
     return;
@@ -457,10 +526,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   renderIntervalHint();
   setInterval(renderAutosendStatus, 15000);
 
-  ["senderName", "subjectTemplate", "bodyTemplate", "countdownSeconds", "perHourCount"].forEach((id) => {
+  ["senderName", "subjectTemplate", "bodyTemplate", "countdownSeconds", "perHourCount", "dailyLimitCount"].forEach((id) => {
     document.getElementById(id).addEventListener("change", saveSettings);
   });
   document.getElementById("perHourCount").addEventListener("input", renderIntervalHint);
+  document.getElementById("dailyLimitCount").addEventListener("input", renderIntervalHint);
 
   document.getElementById("fileInput").addEventListener("change", (e) => {
     const file = e.target.files[0];
@@ -473,4 +543,5 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("stopAutosendBtn").addEventListener("click", handleStopAutosend);
   document.getElementById("saveMailSheetUrlBtn").addEventListener("click", saveMailSheetUrl);
   document.getElementById("loadFromSheetBtn").addEventListener("click", loadFromSpreadsheet);
+  document.getElementById("resetTemplateBtn").addEventListener("click", resetTemplateToDefault);
 });

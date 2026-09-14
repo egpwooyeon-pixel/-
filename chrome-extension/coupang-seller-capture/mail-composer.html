@@ -108,6 +108,7 @@
     color: #374151;
   }
   .empty { color: #9ca3af; padding: 20px 0; text-align: center; }
+  .warn-text { color: #b45309; }
   td.done { text-align: center; }
   td.done input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
   tr.done-row { background: #f0fdf4; }
@@ -134,7 +135,8 @@
     <input type="text" id="subjectTemplate" />
     <label>본문</label>
     <textarea id="bodyTemplate" rows="8"></textarea>
-    <div class="template-help"><code>{{PRODUCT}}</code> = 각 줄의 상품명, <code>{{NAME}}</code> = 위에서 입력한 보내는 사람 이름/직책으로 자동 치환됩니다. 자유롭게 수정하고 다음에도 재사용하세요 (자동 저장됩니다).</div>
+    <div class="template-help"><code>{{PRODUCT}}</code> = 각 줄의 상품명, <code>{{NAME}}</code> = 위에서 입력한 보내는 사람 이름/직책, <code>{{GREETING}}</code>/<code>{{CLOSING}}</code> = 몇 가지 인사말/맺음말 중 하나가 줄마다 자동으로 돌아가며 들어갑니다(스팸 방지용 — 아래 참고) — 모두 자동 치환됩니다. 자유롭게 수정하고 다음에도 재사용하세요 (자동 저장됩니다).</div>
+    <button id="resetTemplateBtn" type="button">스팸 방지 기본 템플릿으로 초기화</button>
   </div>
 
   <div class="card">
@@ -185,14 +187,23 @@
     <div class="file-hint">
       정해진 간격으로 아직 "Gmail로 작성하기"를 누르지 않은 항목을 순서대로 열어줍니다. 각 작성창은 화면 앞에 열리고, 지정한 시간만큼 카운트다운하며 — 그 사이에 내용을 직접 수정할 수 있고, 시간이 되면 그 시점 내용 그대로 "보내기"를 대신 눌러줍니다. 언제든 "지금 취소"를 누르면 해당 건은 전송되지 않습니다.
     </div>
+    <div class="file-hint">
+      <strong>스팸/계정 정지 방지 권장치:</strong> 구글은 시간당 발송 한도를 공식적으로 밝히지 않지만, 일반적으로 <strong>시간당 20통 이하</strong>, <strong>하루 40~100통 이내</strong>로 보내는 것이 안전하다고 알려져 있습니다. 아래 "하루 최대 발송 개수"를 채워두면 그 한도에 도달했을 때 자동으로 멈췄다가, 다음날 같은 간격으로 이어서 보냅니다 — 굳이 매일 직접 재시작할 필요가 없습니다.
+    </div>
     <div class="row2">
       <div>
-        <label>시간당 발송 개수 (예: 10, 30)</label>
+        <label>시간당 발송 개수 (권장: 20 이하)</label>
         <input type="text" id="perHourCount" value="2" />
       </div>
       <div>
         <label>전송 전 대기시간(초) — 이 시간 동안 내용을 검토/수정할 수 있습니다</label>
         <input type="text" id="countdownSeconds" value="60" />
+      </div>
+    </div>
+    <div class="row2">
+      <div>
+        <label>하루 최대 발송 개수 (권장: 40~100, 비워두면 무제한)</label>
+        <input type="text" id="dailyLimitCount" value="80" />
       </div>
     </div>
     <div id="intervalHint" class="file-hint" style="margin-top:-8px;"></div>
