@@ -120,25 +120,45 @@ function doGet(e) {
   });
 }
 
-// Returns every data row (row 2 onward) as an object keyed by header
-// name, e.g. { "e-mail": "...", "상품명(탭 제목)": "...", ... } — the
-// same shape the mail composer already gets from parsing an uploaded
-// xlsx, so both sources feed the same column-detection code there.
+// Finds a column (1-based) whose row-1 header text contains any of the
+// given lowercase substrings. Used by listRows/markRowSent so they work
+// on ANY sheet layout the mail composer points at — not just the fixed
+// 12-column capture-sync schema — by reading whatever headers are
+// actually in row 1, the same way the mail composer's own detectColumns()
+// does on the client side.
+function findHeaderColumn(headerRow, patterns) {
+  for (var i = 0; i < headerRow.length; i++) {
+    var h = String(headerRow[i] || "").toLowerCase();
+    for (var j = 0; j < patterns.length; j++) {
+      if (h.indexOf(patterns[j]) !== -1) return i + 1; // 1-based column
+    }
+  }
+  return -1;
+}
+
+// Returns every data row (row 2 onward) as an object keyed by whatever
+// header text is actually in row 1 of the target sheet — e.g. a simple
+// two-column "e-mail" / "상품명" mailing list works just as well as the
+// full 12-column capture-sync layout. Same object shape the mail
+// composer already gets from parsing an uploaded xlsx, so both sources
+// feed the same column-detection code there.
 function listRows() {
   try {
     var sheet = getOrCreateSheet();
     var lastRow = sheet.getLastRow();
-    if (lastRow < 2) return { ok: true, rows: [] };
+    var lastCol = sheet.getLastColumn();
+    if (lastRow < 2 || lastCol < 1) return { ok: true, rows: [] };
 
-    var values = sheet.getRange(2, 1, lastRow - 1, HEADERS.length).getValues();
+    var headerRow = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    var values = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
     var rows = values
       .filter(function (row) {
         return row.some(function (cell) { return cell !== ""; });
       })
       .map(function (row) {
         var obj = {};
-        HEADERS.forEach(function (header, i) {
-          obj[header] = row[i];
+        headerRow.forEach(function (header, i) {
+          if (header) obj[header] = row[i];
         });
         return obj;
       });
@@ -150,22 +170,31 @@ function listRows() {
 }
 
 // Marks a row as "sent" by turning its text red/bold — found by
-// matching the "상품키(중복확인용)" column, the same key the
-// extension already computes for dedup (see extractCapturedItemKey in
-// shared.js). Called by the mail composer right after it hands a row
-// off to a Gmail compose tab (manual button or paced auto-send).
+// matching whichever column's header looks like "상품키"/"itemkey", the
+// same key the extension computes for dedup (see extractCapturedItemKey
+// in shared.js). Called by the mail composer right after it hands a row
+// off to a Gmail compose tab (manual button or paced auto-send). If the
+// target sheet has no such column (e.g. a plain mailing list with just
+// email/product), this is a no-op "no_key_column" — the mail composer
+// only calls it when it detected a key column client-side, so this is
+// just a safety net, not the common path for such sheets.
 function markRowSent(itemKey) {
   if (!itemKey) return { ok: false, error: "no_item_key" };
 
   var sheet = getOrCreateSheet();
   var lastRow = sheet.getLastRow();
-  if (lastRow < 2) return { ok: false, error: "not_found" };
+  var lastCol = sheet.getLastColumn();
+  if (lastRow < 2 || lastCol < 1) return { ok: false, error: "not_found" };
 
-  var keyValues = sheet.getRange(2, KEY_COLUMN_INDEX, lastRow - 1, 1).getValues();
+  var headerRow = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var keyCol = findHeaderColumn(headerRow, ["상품키", "itemkey"]);
+  if (keyCol === -1) return { ok: false, error: "no_key_column" };
+
+  var keyValues = sheet.getRange(2, keyCol, lastRow - 1, 1).getValues();
   for (var i = 0; i < keyValues.length; i++) {
     if (String(keyValues[i][0]) === String(itemKey)) {
       var rowNum = i + 2;
-      var range = sheet.getRange(rowNum, 1, 1, HEADERS.length);
+      var range = sheet.getRange(rowNum, 1, 1, lastCol);
       range.setFontColor("#dc2626");
       range.setFontWeight("bold");
       return { ok: true, marked: true, row: rowNum };
