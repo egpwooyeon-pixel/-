@@ -19,11 +19,18 @@ function setStatus(text) {
 }
 
 async function loadSettings() {
-  const { senderName, subjectTemplate, bodyTemplate, composedLog: storedLog } =
-    await chrome.storage.local.get(["senderName", "subjectTemplate", "bodyTemplate", "composedLog"]);
+  const { senderName, subjectTemplate, bodyTemplate, composedLog: storedLog, mailAutosendCountdownSeconds } =
+    await chrome.storage.local.get([
+      "senderName",
+      "subjectTemplate",
+      "bodyTemplate",
+      "composedLog",
+      "mailAutosendCountdownSeconds",
+    ]);
   document.getElementById("senderName").value = senderName || "";
   document.getElementById("subjectTemplate").value = subjectTemplate || DEFAULT_SUBJECT_TEMPLATE;
   document.getElementById("bodyTemplate").value = bodyTemplate || DEFAULT_BODY_TEMPLATE;
+  document.getElementById("countdownSeconds").value = mailAutosendCountdownSeconds || 60;
   composedLog = storedLog || {};
 }
 
@@ -32,6 +39,7 @@ async function saveSettings() {
     senderName: document.getElementById("senderName").value,
     subjectTemplate: document.getElementById("subjectTemplate").value,
     bodyTemplate: document.getElementById("bodyTemplate").value,
+    mailAutosendCountdownSeconds: parseInt(document.getElementById("countdownSeconds").value, 10) || 60,
   });
 }
 
@@ -252,11 +260,77 @@ function applyManualColumns() {
   renderRows();
 }
 
+// Builds the send queue from whatever's currently in the table — i.e.
+// any hand-edits to the product-name fields are captured — skipping
+// rows already handled via the per-row "Gmail로 작성하기" button so
+// autosend doesn't double up on those.
+function buildAutosendQueue() {
+  const productInputs = document.querySelectorAll("#rowsBody td.product input");
+  const queue = [];
+  parsedRows.forEach((row, i) => {
+    if (composedLog[row.email]) return;
+    const productValue = productInputs[i] ? productInputs[i].value : guessProductName(row.productRaw);
+    const msg = buildMessage(productValue);
+    queue.push({ to: row.email, subject: msg.subject, body: msg.body });
+  });
+  return queue;
+}
+
+async function renderAutosendStatus() {
+  const state = await chrome.runtime.sendMessage({ type: "GET_MAIL_AUTOSEND_STATUS" });
+  const el = document.getElementById("autosendStatus");
+  const startBtn = document.getElementById("startAutosendBtn");
+  if (!state || (!state.running && (!state.queue || state.queue.length === 0))) {
+    el.textContent = "";
+    startBtn.disabled = false;
+    return;
+  }
+  const total = state.queue.length;
+  const done = state.queue.filter((q) => q.status !== "pending").length;
+  startBtn.disabled = !!state.running;
+  el.textContent = state.running
+    ? `자동 발송 진행 중: ${done} / ${total}건 처리됨 (30분마다 1건씩)`
+    : `자동 발송 종료: ${done} / ${total}건까지 처리됨`;
+}
+
+async function handleStartAutosend() {
+  const queue = buildAutosendQueue();
+  if (queue.length === 0) {
+    setStatus("자동 발송할 대상이 없습니다 (전부 이미 작성했거나, 목록이 비어있습니다).");
+    return;
+  }
+  const countdownSeconds = parseInt(document.getElementById("countdownSeconds").value, 10) || 60;
+  const estimatedMinutes = (queue.length - 1) * 30;
+  const ok = window.confirm(
+    `${queue.length}건을 30분 간격으로(시간당 약 2건) 순서대로 Gmail 작성창을 열어 발송합니다.\n` +
+      `각 작성창은 ${countdownSeconds}초 동안 검토/수정할 수 있고, 그 후 자동으로 "보내기"가 눌립니다. 언제든 "지금 취소"로 막을 수 있습니다.\n` +
+      `모두 처리되기까지 대략 ${estimatedMinutes}분 걸립니다.\n시작할까요?`
+  );
+  if (!ok) return;
+
+  await saveSettings();
+  const response = await chrome.runtime.sendMessage({ type: "START_MAIL_AUTOSEND", queue, countdownSeconds });
+  if (response && response.ok === false) {
+    setStatus("이미 자동 발송이 진행 중입니다.");
+    return;
+  }
+  setStatus("자동 발송을 시작했습니다.");
+  renderAutosendStatus();
+}
+
+async function handleStopAutosend() {
+  await chrome.runtime.sendMessage({ type: "STOP_MAIL_AUTOSEND" });
+  setStatus("자동 발송을 중지했습니다. 이미 열린 작성창은 각자 직접 처리해주세요.");
+  renderAutosendStatus();
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
   await loadSettings();
   renderRows();
+  renderAutosendStatus();
+  setInterval(renderAutosendStatus, 15000);
 
-  ["senderName", "subjectTemplate", "bodyTemplate"].forEach((id) => {
+  ["senderName", "subjectTemplate", "bodyTemplate", "countdownSeconds"].forEach((id) => {
     document.getElementById(id).addEventListener("change", saveSettings);
   });
 
@@ -267,4 +341,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   document.getElementById("emailColumnSelect").addEventListener("change", applyManualColumns);
   document.getElementById("productColumnSelect").addEventListener("change", applyManualColumns);
+  document.getElementById("startAutosendBtn").addEventListener("click", handleStartAutosend);
+  document.getElementById("stopAutosendBtn").addEventListener("click", handleStopAutosend);
 });

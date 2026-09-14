@@ -82,6 +82,13 @@
     border: 1px solid #e5e7eb;
   }
   button:hover { background: #e5e7eb; }
+  #startAutosendBtn {
+    background: #2563eb;
+    color: #fff;
+    border: none;
+  }
+  #startAutosendBtn:hover { background: #1d4ed8; }
+  #startAutosendBtn:disabled { background: #93c5fd; cursor: not-allowed; }
   .composeBtn {
     background: #2563eb;
     color: #fff;
@@ -166,6 +173,24 @@
         <tr><td colspan="3" class="empty">엑셀을 업로드하면 여기에 목록이 표시됩니다.</td></tr>
       </tbody>
     </table>
+  </div>
+
+  <div class="card">
+    <h2>5. 자동 발송 (선택)</h2>
+    <div class="file-hint">
+      30분마다 아직 "Gmail로 작성하기"를 누르지 않은 항목을 순서대로 열어줍니다 (시간당 약 2건). 각 작성창은 화면 앞에 열리고, 지정한 시간만큼 카운트다운하며 — 그 사이에 내용을 직접 수정할 수 있고, 시간이 되면 그 시점 내용 그대로 "보내기"를 대신 눌러줍니다. 언제든 "지금 취소"를 누르면 해당 건은 전송되지 않습니다.
+    </div>
+    <div class="row2">
+      <div>
+        <label>전송 전 대기시간(초) — 이 시간 동안 내용을 검토/수정할 수 있습니다</label>
+        <input type="text" id="countdownSeconds" value="60" />
+      </div>
+    </div>
+    <div class="row2" style="margin-bottom:12px;">
+      <button id="startAutosendBtn">자동 발송 시작</button>
+      <button id="stopAutosendBtn">자동 발송 중지</button>
+    </div>
+    <div id="autosendStatus" style="font-size:12px;color:#6b7280;"></div>
   </div>
 
   <script src="lib/xlsx.full.min.js"></script>

@@ -474,6 +474,109 @@ async function startKeywordBatch(rawKeywords, perKeywordCount, rocketOnly) {
   await setBatchStatus({ running: false, error: stopReason });
 }
 
+// --- Paced Gmail auto-send (mail-composer.html) ----------------------
+// chrome.alarms (unlike the in-memory isRunning/cancelRequested flags
+// above) survives service worker restarts — Chrome wakes the worker to
+// fire it — so this state lives entirely in chrome.storage.local
+// rather than module-level variables.
+
+const MAIL_AUTOSEND_ALARM_NAME = "mailAutosendTick";
+
+async function getMailAutosendState() {
+  const { mailAutosend } = await chrome.storage.local.get("mailAutosend");
+  return mailAutosend || { running: false, queue: [], countdownSeconds: 60, processedCount: 0 };
+}
+
+async function setMailAutosendState(patch) {
+  const current = await getMailAutosendState();
+  const next = { ...current, ...patch };
+  await chrome.storage.local.set({ mailAutosend: next });
+  return next;
+}
+
+function buildGmailComposeUrl(to, subject, body) {
+  return (
+    "https://mail.google.com/mail/?view=cm&fs=1" +
+    `&to=${encodeURIComponent(to)}` +
+    `&su=${encodeURIComponent(subject)}` +
+    `&body=${encodeURIComponent(body)}`
+  );
+}
+
+// Opens the next pending item's Gmail compose tab (in the foreground,
+// so the user actually sees the countdown banner and can edit/cancel),
+// injects the countdown+auto-send script, and marks the item handled.
+// One call = at most one tab opened, matching the alarm's pacing.
+async function processNextMailAutosendItem() {
+  const state = await getMailAutosendState();
+  if (!state.running) return;
+
+  const idx = state.queue.findIndex((item) => item.status === "pending");
+  if (idx === -1) {
+    await chrome.alarms.clear(MAIL_AUTOSEND_ALARM_NAME);
+    await setMailAutosendState({ running: false });
+    return;
+  }
+
+  const item = state.queue[idx];
+  const url = buildGmailComposeUrl(item.to, item.subject, item.body);
+
+  // Marked "opened" as soon as the tab exists — before script injection,
+  // not after — so if the service worker gets killed mid-call, the next
+  // alarm tick won't re-open a second compose tab (and risk a duplicate
+  // send) for the same recipient. Worst case on that rare timing is a
+  // compose tab with no countdown banner, which just needs a manual send.
+  let tab;
+  try {
+    tab = await chrome.tabs.create({ url, active: true });
+  } catch (err) {
+    return; // couldn't even open the tab; leave item pending, retry next tick
+  }
+
+  const latest = await getMailAutosendState();
+  const latestIdx = latest.queue.findIndex((q) => q.to === item.to && q.status === "pending");
+  if (latestIdx !== -1) latest.queue[latestIdx].status = "opened";
+  await setMailAutosendState({ queue: latest.queue, processedCount: latest.processedCount + 1 });
+
+  try {
+    await waitForTabComplete(tab.id, TAB_LOAD_TIMEOUT_MS);
+    await delay(1500); // let Gmail's SPA finish rendering the compose dialog
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: startGmailAutoSendCountdown,
+      args: [state.countdownSeconds],
+    });
+  } catch (err) {
+    // Banner injection failed — tab is open, user can still send manually.
+  }
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === MAIL_AUTOSEND_ALARM_NAME) processNextMailAutosendItem();
+});
+
+async function startMailAutosend(queue, countdownSeconds) {
+  const state = await getMailAutosendState();
+  if (state.running) return { ok: false, reason: "already_running" };
+
+  await setMailAutosendState({
+    running: true,
+    queue: queue.map((item) => ({ ...item, status: "pending" })),
+    countdownSeconds: countdownSeconds || 60,
+    processedCount: 0,
+    startedAt: Date.now(),
+  });
+
+  await chrome.alarms.create(MAIL_AUTOSEND_ALARM_NAME, { periodInMinutes: 30 });
+  processNextMailAutosendItem(); // send the first one right away instead of waiting 30 min
+  return { ok: true };
+}
+
+async function stopMailAutosend() {
+  await chrome.alarms.clear(MAIL_AUTOSEND_ALARM_NAME);
+  await setMailAutosendState({ running: false });
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message && message.type === "START_BATCH" && message.sourceTabId) {
     if (isRunning) {
@@ -511,6 +614,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message && message.type === "PING") {
     sendResponse({ ok: true, isRunning });
     return false;
+  }
+  if (message && message.type === "START_MAIL_AUTOSEND" && Array.isArray(message.queue)) {
+    startMailAutosend(message.queue, message.countdownSeconds).then(sendResponse);
+    return true; // async response
+  }
+  if (message && message.type === "STOP_MAIL_AUTOSEND") {
+    stopMailAutosend().then(() => sendResponse({ ok: true }));
+    return true;
+  }
+  if (message && message.type === "GET_MAIL_AUTOSEND_STATUS") {
+    getMailAutosendState().then(sendResponse);
+    return true;
   }
   return false;
 });

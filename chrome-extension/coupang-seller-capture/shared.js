@@ -238,3 +238,114 @@ function findProductLinksOnListingPage(rocketOnly) {
   }
   return links;
 }
+
+// Runs on a Gmail compose tab (mail.google.com) that background.js just
+// opened via the compose URL scheme (view=cm&to=&su=&body=). Shows a
+// countdown banner and, when it reaches 0, clicks Gmail's own Send
+// button — so whatever the user edited in the compose box during the
+// countdown is exactly what goes out, since this operates the real
+// compose UI rather than submitting separately-held content. A visible
+// "지금 취소" always beats the timer; the send is never silent.
+function startGmailAutoSendCountdown(countdownSeconds) {
+  function findSendButton() {
+    const candidates = Array.from(document.querySelectorAll('div[role="button"], [role="button"]'));
+    return candidates.find((el) => {
+      const label = (el.getAttribute("aria-label") || "").trim();
+      return label.includes("보내기") || /^send\b/i.test(label);
+    });
+  }
+
+  function makeBanner() {
+    const banner = document.createElement("div");
+    banner.id = "__coupang_ext_autosend_banner";
+    banner.style.cssText =
+      "position:fixed;top:0;left:0;right:0;z-index:2147483647;" +
+      "background:#111827;color:#fff;padding:10px 16px;" +
+      "font-family:-apple-system,sans-serif;font-size:14px;" +
+      "display:flex;align-items:center;gap:12px;box-shadow:0 2px 8px rgba(0,0,0,.3);";
+
+    const text = document.createElement("span");
+    text.id = "__coupang_ext_autosend_text";
+    banner.appendChild(text);
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.textContent = "지금 취소";
+    cancelBtn.style.cssText = "padding:5px 10px;border:none;border-radius:5px;background:#dc2626;color:#fff;cursor:pointer;font-size:13px;";
+    banner.appendChild(cancelBtn);
+
+    const nowBtn = document.createElement("button");
+    nowBtn.textContent = "지금 바로 전송";
+    nowBtn.style.cssText = "padding:5px 10px;border:none;border-radius:5px;background:#16a34a;color:#fff;cursor:pointer;font-size:13px;";
+    banner.appendChild(nowBtn);
+
+    document.body.appendChild(banner);
+    return { banner, text, cancelBtn, nowBtn };
+  }
+
+  let cancelled = false;
+  let pollAttempts = 0;
+
+  const waitForCompose = setInterval(() => {
+    pollAttempts++;
+    const sendBtn = findSendButton();
+    if (sendBtn) {
+      clearInterval(waitForCompose);
+      runCountdown();
+      return;
+    }
+    if (pollAttempts > 20) {
+      clearInterval(waitForCompose);
+      const { text, cancelBtn, nowBtn } = makeBanner();
+      text.textContent = "작성창을 찾지 못했습니다. 직접 '보내기'를 눌러주세요.";
+      cancelBtn.style.display = "none";
+      nowBtn.style.display = "none";
+    }
+  }, 500);
+
+  function runCountdown() {
+    const { banner, text, cancelBtn, nowBtn } = makeBanner();
+    let remaining = countdownSeconds;
+
+    const render = () => {
+      text.textContent = `이 메일은 ${remaining}초 후 자동으로 전송됩니다. 지금 작성창에서 내용을 수정하셔도 됩니다.`;
+    };
+    render();
+
+    const tick = setInterval(() => {
+      remaining--;
+      if (remaining <= 0) {
+        clearInterval(tick);
+        doSend();
+        return;
+      }
+      render();
+    }, 1000);
+
+    cancelBtn.addEventListener("click", () => {
+      cancelled = true;
+      clearInterval(tick);
+      banner.remove();
+    });
+
+    nowBtn.addEventListener("click", () => {
+      clearInterval(tick);
+      doSend();
+    });
+
+    function doSend() {
+      if (cancelled) return;
+      const btn = findSendButton();
+      if (btn) {
+        btn.click();
+        text.textContent = "전송했습니다.";
+        cancelBtn.style.display = "none";
+        nowBtn.style.display = "none";
+        setTimeout(() => banner.remove(), 3000);
+      } else {
+        text.textContent = "전송 버튼을 찾지 못했습니다. 직접 '보내기'를 눌러주세요.";
+        cancelBtn.style.display = "none";
+        nowBtn.style.display = "none";
+      }
+    }
+  }
+}
