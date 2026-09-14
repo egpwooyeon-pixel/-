@@ -1,0 +1,547 @@
+const DEFAULT_SUBJECT_TEMPLATE = "{{PRODUCT}} 공동구매/라이브방송 제안드립니다";
+const DEFAULT_BODY_TEMPLATE = `{{PRODUCT}} 대표님. {{GREETING}} 좋은 상품 판매 한번 해보고 싶어서 메일로 연락드렸습니다 :)
+
+저는 13년차 마케터로 온라인 셀러를 준비하고 있는 {{NAME}}입니다.
+
+네이버 스마트스토어에서 공동구매 및 라이브방송으로 함께 판매를 진행해보고 싶습니다. 네이버쇼핑 상위노출과 인플루언서 마케팅을 통해 판매량을 최대한 끌어올려보겠습니다.
+
+혹시 협력 가능하시면 이 메일로 회신 부탁드립니다 🙂
+
+{{CLOSING}}
+{{NAME}} 드림`;
+
+// Rotated per row (by index, not randomly — so previews stay stable and
+// reproducible) so that rows whose product name happens to collide
+// (e.g. guessProductName() bucketing several different items into the
+// same short category like "서랍장") don't end up sending byte-identical
+// subject/body to different recipients. Real, visible wording variation —
+// not an invisible trick — since Gmail's spam filters weigh repeated
+// near-identical content heavily. Only takes effect where the template
+// actually contains {{GREETING}}/{{CLOSING}}; a custom template without
+// those tokens is left exactly as typed.
+const GREETING_VARIANTS = ["안녕하세요.", "안녕하세요, 대표님.", "반갑습니다, 대표님."];
+const CLOSING_VARIANTS = ["감사합니다.", "확인 부탁드립니다. 감사합니다.", "좋은 하루 보내세요. 감사합니다."];
+
+let parsedHeaders = [];
+let parsedRows = []; // [{ email, productRaw }]
+let composedLog = {}; // email -> { composedAt, subject }
+
+function setStatus(text) {
+  document.getElementById("status").textContent = text || "";
+}
+
+async function loadSettings() {
+  const {
+    senderName,
+    subjectTemplate,
+    bodyTemplate,
+    composedLog: storedLog,
+    mailAutosendCountdownSeconds,
+    mailAutosendPerHour,
+    mailAutosendDailyLimit,
+    mailSheetWebAppUrl,
+  } = await chrome.storage.local.get([
+    "senderName",
+    "subjectTemplate",
+    "bodyTemplate",
+    "composedLog",
+    "mailAutosendCountdownSeconds",
+    "mailAutosendPerHour",
+    "mailAutosendDailyLimit",
+    "mailSheetWebAppUrl",
+  ]);
+  document.getElementById("senderName").value = senderName || "";
+  document.getElementById("subjectTemplate").value = subjectTemplate || DEFAULT_SUBJECT_TEMPLATE;
+  document.getElementById("bodyTemplate").value = bodyTemplate || DEFAULT_BODY_TEMPLATE;
+  document.getElementById("countdownSeconds").value = mailAutosendCountdownSeconds || 60;
+  document.getElementById("perHourCount").value = mailAutosendPerHour || 2;
+  document.getElementById("dailyLimitCount").value = mailAutosendDailyLimit != null ? mailAutosendDailyLimit : 80;
+  document.getElementById("mailSheetUrlInput").value = mailSheetWebAppUrl || "";
+  composedLog = storedLog || {};
+}
+
+function resetTemplateToDefault() {
+  document.getElementById("subjectTemplate").value = DEFAULT_SUBJECT_TEMPLATE;
+  document.getElementById("bodyTemplate").value = DEFAULT_BODY_TEMPLATE;
+  saveSettings();
+  setStatus("템플릿을 스팸 방지 기본값으로 초기화했습니다.");
+}
+
+function getMailSheetUrl() {
+  return document.getElementById("mailSheetUrlInput").value.trim();
+}
+
+async function saveMailSheetUrl() {
+  await chrome.storage.local.set({ mailSheetWebAppUrl: getMailSheetUrl() });
+  setStatus("스프레드시트 URL을 저장했습니다.");
+}
+
+async function saveSettings() {
+  await chrome.storage.local.set({
+    senderName: document.getElementById("senderName").value,
+    subjectTemplate: document.getElementById("subjectTemplate").value,
+    bodyTemplate: document.getElementById("bodyTemplate").value,
+    mailAutosendCountdownSeconds: parseInt(document.getElementById("countdownSeconds").value, 10) || 60,
+    mailAutosendPerHour: getPerHourCount(),
+    mailAutosendDailyLimit: getDailyLimit(),
+  });
+}
+
+// Chrome clamps periodic alarms to a 1-minute minimum, so more than
+// 60/hour isn't achievable — cap the input so the UI doesn't promise
+// a rate the alarm can't actually hit. Above this, Gmail's own spam/rate
+// limiting becomes the real constraint anyway (see the warning in the UI).
+function getPerHourCount() {
+  const raw = parseInt(document.getElementById("perHourCount").value, 10);
+  if (!Number.isFinite(raw) || raw < 1) return 2;
+  return Math.min(raw, 60);
+}
+
+// null/0 = no daily cap (autosend just keeps going by the hourly pace
+// alone). A positive number pauses autosend once that many have been
+// opened today and lets it resume automatically the next calendar day —
+// see background.js's daily-limit bookkeeping in processNextMailAutosendItem.
+function getDailyLimit() {
+  const raw = parseInt(document.getElementById("dailyLimitCount").value, 10);
+  if (!Number.isFinite(raw) || raw <= 0) return 0;
+  return raw;
+}
+
+function getIntervalMinutes() {
+  return Math.max(1, Math.round(60 / getPerHourCount()));
+}
+
+function renderIntervalHint() {
+  const perHour = getPerHourCount();
+  const intervalMinutes = getIntervalMinutes();
+  const dailyLimit = getDailyLimit();
+  const el = document.getElementById("intervalHint");
+  let text = `약 ${intervalMinutes}분 간격으로 1건씩 열립니다 (시간당 약 ${Math.round(60 / intervalMinutes)}건).`;
+  text += dailyLimit > 0 ? ` 하루 ${dailyLimit}건에 도달하면 자동으로 멈췄다가 다음날 이어서 보냅니다.` : " 하루 한도 없음 — 스팸 방지를 위해 한도를 정해두는 걸 권장합니다.";
+  el.textContent = text;
+  el.classList.toggle("warn-text", perHour > 20);
+  if (perHour > 20) {
+    el.textContent = "⚠️ 시간당 20통을 넘기면 스팸/계정 일시정지 위험이 커집니다. " + text;
+  }
+}
+
+async function saveComposedLog() {
+  await chrome.storage.local.set({ composedLog });
+}
+
+// Coupang titles look like "실제 상품명 - 카테고리 | 쿠팡"; take the part
+// before the first " - " and trim it down to a short, email-friendly phrase.
+// Always editable afterward — this is just a starting guess.
+function guessProductName(title) {
+  if (!title) return "";
+  let base = String(title).split(" - ")[0].trim();
+  base = base.replace(/\|\s*쿠팡\s*$/, "").trim();
+  const words = base.split(/\s+/);
+  let guess = words.slice(0, 4).join(" ");
+  if (guess.length > 24) guess = guess.slice(0, 24).trim();
+  return guess;
+}
+
+function findHeaderIndex(headers, patterns) {
+  const idx = headers.findIndex((h) => patterns.some((p) => String(h).toLowerCase().includes(p)));
+  return idx;
+}
+
+function rowsFromSheetJson(json) {
+  if (json.length === 0) return { headers: [], rows: [] };
+  const headers = Object.keys(json[0]);
+  return { headers, rows: json };
+}
+
+function detectColumns(headers) {
+  const emailIdx = findHeaderIndex(headers, ["mail", "이메일"]);
+  const productIdx = findHeaderIndex(headers, ["상품명", "제목", "product"]);
+  const keyIdx = findHeaderIndex(headers, ["상품키", "itemkey"]);
+  return {
+    email: emailIdx >= 0 ? headers[emailIdx] : null,
+    product: productIdx >= 0 ? headers[productIdx] : null,
+    key: keyIdx >= 0 ? headers[keyIdx] : null,
+  };
+}
+
+function populateColumnPickers(headers, detected) {
+  const emailSelect = document.getElementById("emailColumnSelect");
+  const productSelect = document.getElementById("productColumnSelect");
+  emailSelect.innerHTML = "";
+  productSelect.innerHTML = "";
+  headers.forEach((h) => {
+    const opt1 = document.createElement("option");
+    opt1.value = h;
+    opt1.textContent = h;
+    emailSelect.appendChild(opt1);
+
+    const opt2 = document.createElement("option");
+    opt2.value = h;
+    opt2.textContent = h;
+    productSelect.appendChild(opt2);
+  });
+  if (detected.email) emailSelect.value = detected.email;
+  if (detected.product) productSelect.value = detected.product;
+  document.getElementById("columnPickers").classList.add("active");
+}
+
+// Dedupes by email (case-insensitive) within the uploaded file itself,
+// keeping the first occurrence — separate from composedLog, which
+// tracks rows already handled across uploads/sessions.
+function buildRowsFromColumns(json, emailKey, productKey, keyColumnKey) {
+  const all = json
+    .map((r) => ({
+      email: String(r[emailKey] || "").trim(),
+      productRaw: String(r[productKey] || "").trim(),
+      itemKey: keyColumnKey ? String(r[keyColumnKey] || "").trim() : "",
+    }))
+    .filter((r) => r.email);
+
+  const seen = new Set();
+  const deduped = [];
+  let duplicateCount = 0;
+  all.forEach((r) => {
+    const key = r.email.toLowerCase();
+    if (seen.has(key)) {
+      duplicateCount++;
+      return;
+    }
+    seen.add(key);
+    deduped.push(r);
+  });
+
+  return { rows: deduped, duplicateCount };
+}
+
+function renderRows() {
+  const tbody = document.getElementById("rowsBody");
+  tbody.innerHTML = "";
+
+  if (parsedRows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">엑셀을 업로드하면 여기에 목록이 표시됩니다.</td></tr>';
+    return;
+  }
+
+  parsedRows.forEach((row, i) => {
+    const tr = document.createElement("tr");
+    const isDone = () => !!composedLog[row.email];
+    const applyDoneStyle = () => tr.classList.toggle("done-row", isDone());
+
+    const doneTd = document.createElement("td");
+    doneTd.className = "done";
+    const doneCheckbox = document.createElement("input");
+    doneCheckbox.type = "checkbox";
+    doneCheckbox.checked = isDone();
+    doneCheckbox.title = "완료 표시 (자동으로도 체크되지만, 직접 체크/해제할 수 있습니다)";
+    doneTd.appendChild(doneCheckbox);
+    tr.appendChild(doneTd);
+
+    const emailTd = document.createElement("td");
+    emailTd.className = "email";
+    emailTd.textContent = row.email;
+    tr.appendChild(emailTd);
+
+    const productTd = document.createElement("td");
+    productTd.className = "product";
+    const productInput = document.createElement("input");
+    productInput.type = "text";
+    productInput.value = guessProductName(row.productRaw);
+    productInput.dataset.index = String(i);
+    productTd.appendChild(productInput);
+    tr.appendChild(productTd);
+
+    const actionsTd = document.createElement("td");
+    actionsTd.className = "actions";
+
+    const previewBtn = document.createElement("button");
+    previewBtn.className = "previewBtn";
+    previewBtn.textContent = "미리보기";
+    actionsTd.appendChild(previewBtn);
+
+    const composeBtn = document.createElement("button");
+    composeBtn.className = "composeBtn";
+    composeBtn.textContent = "Gmail로 작성하기";
+    actionsTd.appendChild(composeBtn);
+
+    tr.appendChild(actionsTd);
+    tbody.appendChild(tr);
+
+    const previewTr = document.createElement("tr");
+    previewTr.className = "preview-row";
+    previewTr.style.display = "none";
+    const previewTd = document.createElement("td");
+    previewTd.colSpan = 4;
+    previewTr.appendChild(previewTd);
+    tbody.appendChild(previewTr);
+
+    const refreshComposeBtn = () => {
+      if (isDone()) {
+        composeBtn.classList.add("done");
+        composeBtn.textContent = "✓ 작성창 열림 (다시 열기)";
+      } else {
+        composeBtn.classList.remove("done");
+        composeBtn.textContent = "Gmail로 작성하기";
+      }
+    };
+
+    doneCheckbox.addEventListener("change", async () => {
+      if (doneCheckbox.checked) {
+        composedLog[row.email] = composedLog[row.email] || { composedAt: new Date().toISOString(), manual: true };
+      } else {
+        delete composedLog[row.email];
+      }
+      await saveComposedLog();
+      applyDoneStyle();
+      refreshComposeBtn();
+    });
+
+    previewBtn.addEventListener("click", () => {
+      const visible = previewTr.style.display !== "none";
+      if (visible) {
+        previewTr.style.display = "none";
+        return;
+      }
+      const msg = buildMessage(productInput.value, i);
+      previewTd.textContent = `제목: ${msg.subject}\n\n${msg.body}`;
+      previewTr.style.display = "";
+    });
+
+    composeBtn.addEventListener("click", async () => {
+      const msg = buildMessage(productInput.value, i);
+      const url =
+        "https://mail.google.com/mail/?view=cm&fs=1" +
+        `&to=${encodeURIComponent(row.email)}` +
+        `&su=${encodeURIComponent(msg.subject)}` +
+        `&body=${encodeURIComponent(msg.body)}`;
+      window.open(url, "_blank");
+
+      composedLog[row.email] = { composedAt: new Date().toISOString(), subject: msg.subject };
+      await saveComposedLog();
+      doneCheckbox.checked = true;
+      applyDoneStyle();
+      refreshComposeBtn();
+
+      const sheetUrl = getMailSheetUrl();
+      if (sheetUrl && row.itemKey) markSheetRowSent(sheetUrl, row.itemKey);
+    });
+
+    applyDoneStyle();
+    refreshComposeBtn();
+  });
+}
+
+function buildMessage(productName, variantIndex) {
+  const name = document.getElementById("senderName").value || "";
+  const subjectTpl = document.getElementById("subjectTemplate").value || DEFAULT_SUBJECT_TEMPLATE;
+  const bodyTpl = document.getElementById("bodyTemplate").value || DEFAULT_BODY_TEMPLATE;
+  const idx = Number.isFinite(variantIndex) ? variantIndex : 0;
+  const greeting = GREETING_VARIANTS[idx % GREETING_VARIANTS.length];
+  const closing = CLOSING_VARIANTS[idx % CLOSING_VARIANTS.length];
+  const fill = (tpl) =>
+    tpl
+      .split("{{PRODUCT}}").join(productName)
+      .split("{{NAME}}").join(name)
+      .split("{{GREETING}}").join(greeting)
+      .split("{{CLOSING}}").join(closing);
+  return { subject: fill(subjectTpl), body: fill(bodyTpl) };
+}
+
+function readFileAsArrayBuffer(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+async function handleFile(file) {
+  setStatus("파일을 읽는 중...");
+  try {
+    const buffer = await readFileAsArrayBuffer(file);
+    const workbook = XLSX.read(buffer, { type: "array" });
+    const firstSheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[firstSheetName];
+    const json = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+    if (json.length === 0) {
+      setStatus("파일에서 데이터를 찾지 못했습니다.");
+      return;
+    }
+
+    ingestRows(json, "파일");
+  } catch (err) {
+    setStatus("파일을 읽는 데 실패했습니다: " + err.message);
+  }
+}
+
+// Shared entry point for both the xlsx upload path and the spreadsheet
+// load path — both end up with the same "array of objects keyed by
+// column header" shape, so column detection/dedup only needs writing once.
+function ingestRows(json, sourceLabel) {
+  if (json.length === 0) {
+    setStatus(`${sourceLabel}에서 데이터를 찾지 못했습니다.`);
+    return;
+  }
+
+  const { headers } = rowsFromSheetJson(json);
+  parsedHeaders = headers;
+  const detected = detectColumns(headers);
+
+  if (detected.email && detected.product) {
+    document.getElementById("columnPickers").classList.remove("active");
+    const result = buildRowsFromColumns(json, detected.email, detected.product, detected.key);
+    parsedRows = result.rows;
+    const dupText = result.duplicateCount > 0 ? `, 중복 이메일 ${result.duplicateCount}건 제거됨` : "";
+    setStatus(`${parsedRows.length}건을 불러왔습니다${dupText}. (이메일 컬럼: "${detected.email}", 상품명 컬럼: "${detected.product}")`);
+    renderRows();
+  } else {
+    populateColumnPickers(headers, detected);
+    setStatus(`이메일/상품명 컬럼을 자동으로 못 찾았습니다. 아래에서 직접 선택해주세요. (${sourceLabel})`);
+    parsedRows = [];
+    renderRows();
+    window.__pendingJson = json;
+  }
+}
+
+function applyManualColumns() {
+  const emailKey = document.getElementById("emailColumnSelect").value;
+  const productKey = document.getElementById("productColumnSelect").value;
+  if (!window.__pendingJson || !emailKey || !productKey) return;
+  const result = buildRowsFromColumns(window.__pendingJson, emailKey, productKey);
+  parsedRows = result.rows;
+  const dupText = result.duplicateCount > 0 ? `, 중복 이메일 ${result.duplicateCount}건 제거됨` : "";
+  setStatus(`${parsedRows.length}건을 불러왔습니다${dupText}.`);
+  renderRows();
+}
+
+async function loadFromSpreadsheet() {
+  const url = getMailSheetUrl();
+  if (!url) {
+    setStatus("먼저 스프레드시트 웹 앱 URL을 입력하고 저장하세요.");
+    return;
+  }
+  await saveMailSheetUrl();
+  setStatus("스프레드시트를 불러오는 중...");
+  const result = await fetchSheetRows(url);
+  if (!result.ok) {
+    setStatus(`스프레드시트를 불러오지 못했습니다 (${result.reason}). URL이 맞는지, 배포가 "전체 허용"인지 확인하세요.`);
+    return;
+  }
+  ingestRows(result.rows, "스프레드시트");
+}
+
+// Builds the send queue from whatever's currently in the table — i.e.
+// any hand-edits to the product-name fields are captured — skipping
+// rows already handled via the per-row "Gmail로 작성하기" button so
+// autosend doesn't double up on those.
+function buildAutosendQueue() {
+  const productInputs = document.querySelectorAll("#rowsBody td.product input");
+  const queue = [];
+  parsedRows.forEach((row, i) => {
+    if (composedLog[row.email]) return;
+    const productValue = productInputs[i] ? productInputs[i].value : guessProductName(row.productRaw);
+    const msg = buildMessage(productValue, i);
+    queue.push({ to: row.email, subject: msg.subject, body: msg.body, itemKey: row.itemKey || "" });
+  });
+  return queue;
+}
+
+async function renderAutosendStatus() {
+  const state = await chrome.runtime.sendMessage({ type: "GET_MAIL_AUTOSEND_STATUS" });
+  const el = document.getElementById("autosendStatus");
+  const startBtn = document.getElementById("startAutosendBtn");
+  if (!state || (!state.running && (!state.queue || state.queue.length === 0))) {
+    el.textContent = "";
+    startBtn.disabled = false;
+    return;
+  }
+  const total = state.queue.length;
+  const done = state.queue.filter((q) => q.status !== "pending").length;
+  const intervalMinutes = state.intervalMinutes || getIntervalMinutes();
+  startBtn.disabled = !!state.running;
+  let text = state.running
+    ? `자동 발송 진행 중: ${done} / ${total}건 처리됨 (${intervalMinutes}분마다 1건씩)`
+    : `자동 발송 종료: ${done} / ${total}건까지 처리됨`;
+  if (state.running && state.dailyLimit > 0) {
+    text += ` — 오늘 ${state.dailySentCount || 0} / ${state.dailyLimit}건 발송`;
+    if ((state.dailySentCount || 0) >= state.dailyLimit) {
+      text += " (오늘 한도 도달, 내일 자동으로 이어서 보냅니다)";
+    }
+  }
+  el.textContent = text;
+}
+
+async function handleStartAutosend() {
+  const queue = buildAutosendQueue();
+  if (queue.length === 0) {
+    setStatus("자동 발송할 대상이 없습니다 (전부 이미 작성했거나, 목록이 비어있습니다).");
+    return;
+  }
+  const countdownSeconds = parseInt(document.getElementById("countdownSeconds").value, 10) || 60;
+  const perHour = getPerHourCount();
+  const dailyLimit = getDailyLimit();
+  const intervalMinutes = getIntervalMinutes();
+  const estimatedMinutes = (queue.length - 1) * intervalMinutes;
+  let warning = "";
+  if (perHour > 20) {
+    warning += "\n⚠️ 시간당 20통을 초과하면 스팸/계정 일시정지 위험이 커집니다. 정말 이대로 진행할까요?";
+  }
+  const dailyText = dailyLimit > 0 ? `, 하루 최대 ${dailyLimit}건` : " (하루 한도 없음)";
+  const ok = window.confirm(
+    `${queue.length}건을 ${intervalMinutes}분 간격으로(시간당 약 ${perHour}건${dailyText}) 순서대로 Gmail 작성창을 열어 발송합니다.\n` +
+      `각 작성창은 ${countdownSeconds}초 동안 검토/수정할 수 있고, 그 후 자동으로 "보내기"가 눌립니다. 언제든 "지금 취소"로 막을 수 있습니다.\n` +
+      `모두 처리되기까지 대략 ${estimatedMinutes}분 걸립니다 (하루 한도에 걸리면 며칠에 걸쳐 나눠 보내집니다).${warning}\n시작할까요?`
+  );
+  if (!ok) return;
+
+  await saveSettings();
+  const sheetUrl = getMailSheetUrl();
+  const response = await chrome.runtime.sendMessage({
+    type: "START_MAIL_AUTOSEND",
+    queue,
+    countdownSeconds,
+    perHour,
+    sheetUrl,
+    dailyLimit,
+  });
+  if (response && response.ok === false) {
+    setStatus("이미 자동 발송이 진행 중입니다.");
+    return;
+  }
+  setStatus("자동 발송을 시작했습니다.");
+  renderAutosendStatus();
+}
+
+async function handleStopAutosend() {
+  await chrome.runtime.sendMessage({ type: "STOP_MAIL_AUTOSEND" });
+  setStatus("자동 발송을 중지했습니다. 이미 열린 작성창은 각자 직접 처리해주세요.");
+  renderAutosendStatus();
+}
+
+document.addEventListener("DOMContentLoaded", async () => {
+  await loadSettings();
+  renderRows();
+  renderAutosendStatus();
+  renderIntervalHint();
+  setInterval(renderAutosendStatus, 15000);
+
+  ["senderName", "subjectTemplate", "bodyTemplate", "countdownSeconds", "perHourCount", "dailyLimitCount"].forEach((id) => {
+    document.getElementById(id).addEventListener("change", saveSettings);
+  });
+  document.getElementById("perHourCount").addEventListener("input", renderIntervalHint);
+  document.getElementById("dailyLimitCount").addEventListener("input", renderIntervalHint);
+
+  document.getElementById("fileInput").addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (file) handleFile(file);
+  });
+
+  document.getElementById("emailColumnSelect").addEventListener("change", applyManualColumns);
+  document.getElementById("productColumnSelect").addEventListener("change", applyManualColumns);
+  document.getElementById("startAutosendBtn").addEventListener("click", handleStartAutosend);
+  document.getElementById("stopAutosendBtn").addEventListener("click", handleStopAutosend);
+  document.getElementById("saveMailSheetUrlBtn").addEventListener("click", saveMailSheetUrl);
+  document.getElementById("loadFromSheetBtn").addEventListener("click", loadFromSpreadsheet);
+  document.getElementById("resetTemplateBtn").addEventListener("click", resetTemplateToDefault);
+});
