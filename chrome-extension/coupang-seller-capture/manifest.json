@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "쿠팡 판매자정보 캡처",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "쿠팡 상품페이지의 판매자 정보를 캡처하여 CSV로 누적 저장하고, 구글 스프레드시트로 실시간 동기화하며, 협업 제안 메일 작성/페이스 조절 발송을 돕습니다.",
   "permissions": ["storage", "activeTab", "scripting", "downloads", "tabs", "alarms"],
   "host_permissions": [

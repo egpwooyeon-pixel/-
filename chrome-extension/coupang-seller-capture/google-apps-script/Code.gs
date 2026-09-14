@@ -61,6 +61,11 @@ function doPost(e) {
     }
 
     var body = JSON.parse(e.postData.contents);
+
+    if (body.action === "markSent") {
+      return jsonResponse(markRowSent(body.itemKey));
+    }
+
     var records = Array.isArray(body.records)
       ? body.records
       : body.record
@@ -106,10 +111,67 @@ function doPost(e) {
 }
 
 function doGet(e) {
+  if (e && e.parameter && e.parameter.action === "list") {
+    return jsonResponse(listRows());
+  }
   return jsonResponse({
     ok: true,
     message: "쿠팡 판매자정보 캡처 Apps Script가 정상 동작 중입니다.",
   });
+}
+
+// Returns every data row (row 2 onward) as an object keyed by header
+// name, e.g. { "e-mail": "...", "상품명(탭 제목)": "...", ... } — the
+// same shape the mail composer already gets from parsing an uploaded
+// xlsx, so both sources feed the same column-detection code there.
+function listRows() {
+  try {
+    var sheet = getOrCreateSheet();
+    var lastRow = sheet.getLastRow();
+    if (lastRow < 2) return { ok: true, rows: [] };
+
+    var values = sheet.getRange(2, 1, lastRow - 1, HEADERS.length).getValues();
+    var rows = values
+      .filter(function (row) {
+        return row.some(function (cell) { return cell !== ""; });
+      })
+      .map(function (row) {
+        var obj = {};
+        HEADERS.forEach(function (header, i) {
+          obj[header] = row[i];
+        });
+        return obj;
+      });
+
+    return { ok: true, rows: rows };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
+
+// Marks a row as "sent" by turning its text red/bold — found by
+// matching the "상품키(중복확인용)" column, the same key the
+// extension already computes for dedup (see extractCapturedItemKey in
+// shared.js). Called by the mail composer right after it hands a row
+// off to a Gmail compose tab (manual button or paced auto-send).
+function markRowSent(itemKey) {
+  if (!itemKey) return { ok: false, error: "no_item_key" };
+
+  var sheet = getOrCreateSheet();
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { ok: false, error: "not_found" };
+
+  var keyValues = sheet.getRange(2, KEY_COLUMN_INDEX, lastRow - 1, 1).getValues();
+  for (var i = 0; i < keyValues.length; i++) {
+    if (String(keyValues[i][0]) === String(itemKey)) {
+      var rowNum = i + 2;
+      var range = sheet.getRange(rowNum, 1, 1, HEADERS.length);
+      range.setFontColor("#dc2626");
+      range.setFontWeight("bold");
+      return { ok: true, marked: true, row: rowNum };
+    }
+  }
+  return { ok: false, error: "not_found" };
 }
 
 // The extension already computes and sends record.itemKey (see

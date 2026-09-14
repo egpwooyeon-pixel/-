@@ -76,6 +76,48 @@ async function postRecordsToSheet(records) {
   return { ok: true, added, duplicates };
 }
 
+// Fetches every row from `url` (a Code.gs deployment's web app URL,
+// via its doGet?action=list) as an array of objects keyed by column
+// header — the same shape XLSX.utils.sheet_to_json gives when parsing
+// an uploaded file, so callers can feed either source through the
+// same column-detection logic. Takes the URL explicitly (rather than
+// looking up getSheetWebAppUrl() itself) so callers can point this at
+// any deployment — e.g. the mail composer's own, independent sheet —
+// not just the one configured for the Coupang-capture sync.
+async function fetchSheetRows(url) {
+  if (!url) return { ok: false, reason: "no_url" };
+  try {
+    const sep = url.includes("?") ? "&" : "?";
+    const res = await fetch(`${url}${sep}action=list`);
+    const data = await res.json().catch(() => null);
+    if (!data || !data.ok) return { ok: false, reason: "response_not_ok" };
+    return { ok: true, rows: data.rows || [] };
+  } catch (err) {
+    return { ok: false, reason: "network_error" };
+  }
+}
+
+// Tells the Code.gs deployment at `url` to mark one row as handled
+// (red/bold text) by its "상품키(중복확인용)" key — called right
+// after a row is handed off to a Gmail compose tab, whether via the
+// manual per-row button or the paced auto-send queue. Best-effort: a
+// failure here doesn't block or undo the compose/send itself.
+async function markSheetRowSent(url, itemKey) {
+  if (!url) return { ok: false, reason: "no_url" };
+  if (!itemKey) return { ok: false, reason: "no_key" };
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action: "markSent", itemKey }),
+    });
+    const data = await res.json().catch(() => null);
+    return data && data.ok ? { ok: true } : { ok: false, reason: "response_not_ok" };
+  } catch (err) {
+    return { ok: false, reason: "network_error" };
+  }
+}
+
 // Runs on any Coupang page. Detects known access-blocked pages —
 // Coupang's own "사용권한이 없습니다" page, and the Akamai
 // (errors.edgesuite.net) "Access Denied" edge block that can trigger

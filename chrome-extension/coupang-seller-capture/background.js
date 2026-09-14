@@ -538,6 +538,13 @@ async function processNextMailAutosendItem() {
   if (latestIdx !== -1) latest.queue[latestIdx].status = "opened";
   await setMailAutosendState({ queue: latest.queue, processedCount: latest.processedCount + 1 });
 
+  // Best-effort: mark the spreadsheet row red/bold so it's visible at a
+  // glance which rows are already handled. Doesn't block/undo the
+  // compose tab already opened above if the sheet is unreachable.
+  if (state.sheetUrl && item.itemKey) {
+    markSheetRowSent(state.sheetUrl, item.itemKey);
+  }
+
   try {
     await waitForTabComplete(tab.id, TAB_LOAD_TIMEOUT_MS);
     await delay(1500); // let Gmail's SPA finish rendering the compose dialog
@@ -563,7 +570,7 @@ function computeIntervalMinutes(perHour) {
   return Math.max(1, Math.round(60 / count));
 }
 
-async function startMailAutosend(queue, countdownSeconds, perHour) {
+async function startMailAutosend(queue, countdownSeconds, perHour, sheetUrl) {
   const state = await getMailAutosendState();
   if (state.running) return { ok: false, reason: "already_running" };
 
@@ -576,6 +583,7 @@ async function startMailAutosend(queue, countdownSeconds, perHour) {
     intervalMinutes,
     processedCount: 0,
     startedAt: Date.now(),
+    sheetUrl: sheetUrl || "",
   });
 
   await chrome.alarms.create(MAIL_AUTOSEND_ALARM_NAME, { periodInMinutes: intervalMinutes });
@@ -627,7 +635,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
   if (message && message.type === "START_MAIL_AUTOSEND" && Array.isArray(message.queue)) {
-    startMailAutosend(message.queue, message.countdownSeconds, message.perHour).then(sendResponse);
+    startMailAutosend(message.queue, message.countdownSeconds, message.perHour, message.sheetUrl).then(sendResponse);
     return true; // async response
   }
   if (message && message.type === "STOP_MAIL_AUTOSEND") {

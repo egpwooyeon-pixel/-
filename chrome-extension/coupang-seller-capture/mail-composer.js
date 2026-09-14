@@ -26,6 +26,7 @@ async function loadSettings() {
     composedLog: storedLog,
     mailAutosendCountdownSeconds,
     mailAutosendPerHour,
+    mailSheetWebAppUrl,
   } = await chrome.storage.local.get([
     "senderName",
     "subjectTemplate",
@@ -33,13 +34,24 @@ async function loadSettings() {
     "composedLog",
     "mailAutosendCountdownSeconds",
     "mailAutosendPerHour",
+    "mailSheetWebAppUrl",
   ]);
   document.getElementById("senderName").value = senderName || "";
   document.getElementById("subjectTemplate").value = subjectTemplate || DEFAULT_SUBJECT_TEMPLATE;
   document.getElementById("bodyTemplate").value = bodyTemplate || DEFAULT_BODY_TEMPLATE;
   document.getElementById("countdownSeconds").value = mailAutosendCountdownSeconds || 60;
   document.getElementById("perHourCount").value = mailAutosendPerHour || 2;
+  document.getElementById("mailSheetUrlInput").value = mailSheetWebAppUrl || "";
   composedLog = storedLog || {};
+}
+
+function getMailSheetUrl() {
+  return document.getElementById("mailSheetUrlInput").value.trim();
+}
+
+async function saveMailSheetUrl() {
+  await chrome.storage.local.set({ mailSheetWebAppUrl: getMailSheetUrl() });
+  setStatus("스프레드시트 URL을 저장했습니다.");
 }
 
 async function saveSettings() {
@@ -103,9 +115,11 @@ function rowsFromSheetJson(json) {
 function detectColumns(headers) {
   const emailIdx = findHeaderIndex(headers, ["mail", "이메일"]);
   const productIdx = findHeaderIndex(headers, ["상품명", "제목", "product"]);
+  const keyIdx = findHeaderIndex(headers, ["상품키", "itemkey"]);
   return {
     email: emailIdx >= 0 ? headers[emailIdx] : null,
     product: productIdx >= 0 ? headers[productIdx] : null,
+    key: keyIdx >= 0 ? headers[keyIdx] : null,
   };
 }
 
@@ -133,11 +147,12 @@ function populateColumnPickers(headers, detected) {
 // Dedupes by email (case-insensitive) within the uploaded file itself,
 // keeping the first occurrence — separate from composedLog, which
 // tracks rows already handled across uploads/sessions.
-function buildRowsFromColumns(json, emailKey, productKey) {
+function buildRowsFromColumns(json, emailKey, productKey, keyColumnKey) {
   const all = json
     .map((r) => ({
       email: String(r[emailKey] || "").trim(),
       productRaw: String(r[productKey] || "").trim(),
+      itemKey: keyColumnKey ? String(r[keyColumnKey] || "").trim() : "",
     }))
     .filter((r) => r.email);
 
@@ -264,6 +279,9 @@ function renderRows() {
       doneCheckbox.checked = true;
       applyDoneStyle();
       refreshComposeBtn();
+
+      const sheetUrl = getMailSheetUrl();
+      if (sheetUrl && row.itemKey) markSheetRowSent(sheetUrl, row.itemKey);
     });
 
     applyDoneStyle();
@@ -302,26 +320,38 @@ async function handleFile(file) {
       return;
     }
 
-    const { headers } = rowsFromSheetJson(json);
-    parsedHeaders = headers;
-    const detected = detectColumns(headers);
-
-    if (detected.email && detected.product) {
-      document.getElementById("columnPickers").classList.remove("active");
-      const result = buildRowsFromColumns(json, detected.email, detected.product);
-      parsedRows = result.rows;
-      const dupText = result.duplicateCount > 0 ? `, 중복 이메일 ${result.duplicateCount}건 제거됨` : "";
-      setStatus(`${parsedRows.length}건을 불러왔습니다${dupText}. (이메일 컬럼: "${detected.email}", 상품명 컬럼: "${detected.product}")`);
-      renderRows();
-    } else {
-      populateColumnPickers(headers, detected);
-      setStatus("이메일/상품명 컬럼을 자동으로 못 찾았습니다. 아래에서 직접 선택해주세요.");
-      parsedRows = [];
-      renderRows();
-      window.__pendingJson = json;
-    }
+    ingestRows(json, "파일");
   } catch (err) {
     setStatus("파일을 읽는 데 실패했습니다: " + err.message);
+  }
+}
+
+// Shared entry point for both the xlsx upload path and the spreadsheet
+// load path — both end up with the same "array of objects keyed by
+// column header" shape, so column detection/dedup only needs writing once.
+function ingestRows(json, sourceLabel) {
+  if (json.length === 0) {
+    setStatus(`${sourceLabel}에서 데이터를 찾지 못했습니다.`);
+    return;
+  }
+
+  const { headers } = rowsFromSheetJson(json);
+  parsedHeaders = headers;
+  const detected = detectColumns(headers);
+
+  if (detected.email && detected.product) {
+    document.getElementById("columnPickers").classList.remove("active");
+    const result = buildRowsFromColumns(json, detected.email, detected.product, detected.key);
+    parsedRows = result.rows;
+    const dupText = result.duplicateCount > 0 ? `, 중복 이메일 ${result.duplicateCount}건 제거됨` : "";
+    setStatus(`${parsedRows.length}건을 불러왔습니다${dupText}. (이메일 컬럼: "${detected.email}", 상품명 컬럼: "${detected.product}")`);
+    renderRows();
+  } else {
+    populateColumnPickers(headers, detected);
+    setStatus(`이메일/상품명 컬럼을 자동으로 못 찾았습니다. 아래에서 직접 선택해주세요. (${sourceLabel})`);
+    parsedRows = [];
+    renderRows();
+    window.__pendingJson = json;
   }
 }
 
@@ -336,6 +366,22 @@ function applyManualColumns() {
   renderRows();
 }
 
+async function loadFromSpreadsheet() {
+  const url = getMailSheetUrl();
+  if (!url) {
+    setStatus("먼저 스프레드시트 웹 앱 URL을 입력하고 저장하세요.");
+    return;
+  }
+  await saveMailSheetUrl();
+  setStatus("스프레드시트를 불러오는 중...");
+  const result = await fetchSheetRows(url);
+  if (!result.ok) {
+    setStatus(`스프레드시트를 불러오지 못했습니다 (${result.reason}). URL이 맞는지, 배포가 "전체 허용"인지 확인하세요.`);
+    return;
+  }
+  ingestRows(result.rows, "스프레드시트");
+}
+
 // Builds the send queue from whatever's currently in the table — i.e.
 // any hand-edits to the product-name fields are captured — skipping
 // rows already handled via the per-row "Gmail로 작성하기" button so
@@ -347,7 +393,7 @@ function buildAutosendQueue() {
     if (composedLog[row.email]) return;
     const productValue = productInputs[i] ? productInputs[i].value : guessProductName(row.productRaw);
     const msg = buildMessage(productValue);
-    queue.push({ to: row.email, subject: msg.subject, body: msg.body });
+    queue.push({ to: row.email, subject: msg.subject, body: msg.body, itemKey: row.itemKey || "" });
   });
   return queue;
 }
@@ -388,7 +434,8 @@ async function handleStartAutosend() {
   if (!ok) return;
 
   await saveSettings();
-  const response = await chrome.runtime.sendMessage({ type: "START_MAIL_AUTOSEND", queue, countdownSeconds, perHour });
+  const sheetUrl = getMailSheetUrl();
+  const response = await chrome.runtime.sendMessage({ type: "START_MAIL_AUTOSEND", queue, countdownSeconds, perHour, sheetUrl });
   if (response && response.ok === false) {
     setStatus("이미 자동 발송이 진행 중입니다.");
     return;
@@ -424,4 +471,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("productColumnSelect").addEventListener("change", applyManualColumns);
   document.getElementById("startAutosendBtn").addEventListener("click", handleStartAutosend);
   document.getElementById("stopAutosendBtn").addEventListener("click", handleStopAutosend);
+  document.getElementById("saveMailSheetUrlBtn").addEventListener("click", saveMailSheetUrl);
+  document.getElementById("loadFromSheetBtn").addEventListener("click", loadFromSpreadsheet);
 });

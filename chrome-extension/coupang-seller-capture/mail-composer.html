@@ -138,8 +138,17 @@
   </div>
 
   <div class="card">
-    <h2>3. 엑셀 업로드</h2>
-    <div class="file-hint">이 확장프로그램에서 CSV 다운로드한 파일이면 열/이메일 컬럼을 자동으로 찾습니다. 다른 엑셀이면 아래에서 직접 컬럼을 골라주세요.</div>
+    <h2>3. 명단 가져오기</h2>
+    <div class="file-hint">엑셀(xlsx) 업로드 또는 구글 스프레드시트 연동 중 하나를 사용하세요. 스프레드시트는 이 확장프로그램의 쿠팡 캡처 동기화 시트와는 별개로, 여기 전용 웹 앱 URL을 따로 지정합니다.</div>
+
+    <label>구글 스프레드시트 웹 앱 URL (메일 도구 전용, 선택)</label>
+    <input type="text" id="mailSheetUrlInput" placeholder="https://script.google.com/macros/s/.../exec" />
+    <div class="row2" style="margin-bottom:12px;">
+      <button id="saveMailSheetUrlBtn">URL 저장</button>
+      <button id="loadFromSheetBtn">스프레드시트에서 불러오기</button>
+    </div>
+
+    <div class="file-hint">엑셀 업로드: 이 확장프로그램에서 CSV 다운로드한 파일이면 열/이메일 컬럼을 자동으로 찾습니다. 다른 엑셀이면 아래에서 직접 컬럼을 골라주세요.</div>
     <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" />
     <div id="columnPickers">
       <div style="flex:1;">
@@ -195,6 +204,7 @@
   </div>
 
   <script src="lib/xlsx.full.min.js"></script>
+  <script src="shared.js"></script>
   <script src="mail-composer.js"></script>
 </body>
 </html>
