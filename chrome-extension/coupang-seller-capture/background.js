@@ -484,7 +484,7 @@ const MAIL_AUTOSEND_ALARM_NAME = "mailAutosendTick";
 
 async function getMailAutosendState() {
   const { mailAutosend } = await chrome.storage.local.get("mailAutosend");
-  return mailAutosend || { running: false, queue: [], countdownSeconds: 60, processedCount: 0 };
+  return mailAutosend || { running: false, queue: [], countdownSeconds: 60, intervalMinutes: 30, processedCount: 0 };
 }
 
 async function setMailAutosendState(patch) {
@@ -555,20 +555,31 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === MAIL_AUTOSEND_ALARM_NAME) processNextMailAutosendItem();
 });
 
-async function startMailAutosend(queue, countdownSeconds) {
+// Chrome clamps a periodic alarm to a 1-minute minimum, which caps the
+// achievable rate at 60/hour — anything requested above that just runs
+// at 1-minute intervals instead of erroring.
+function computeIntervalMinutes(perHour) {
+  const count = Math.min(Math.max(1, perHour || 2), 60);
+  return Math.max(1, Math.round(60 / count));
+}
+
+async function startMailAutosend(queue, countdownSeconds, perHour) {
   const state = await getMailAutosendState();
   if (state.running) return { ok: false, reason: "already_running" };
+
+  const intervalMinutes = computeIntervalMinutes(perHour);
 
   await setMailAutosendState({
     running: true,
     queue: queue.map((item) => ({ ...item, status: "pending" })),
     countdownSeconds: countdownSeconds || 60,
+    intervalMinutes,
     processedCount: 0,
     startedAt: Date.now(),
   });
 
-  await chrome.alarms.create(MAIL_AUTOSEND_ALARM_NAME, { periodInMinutes: 30 });
-  processNextMailAutosendItem(); // send the first one right away instead of waiting 30 min
+  await chrome.alarms.create(MAIL_AUTOSEND_ALARM_NAME, { periodInMinutes: intervalMinutes });
+  processNextMailAutosendItem(); // send the first one right away instead of waiting a full interval
   return { ok: true };
 }
 
@@ -616,7 +627,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
   if (message && message.type === "START_MAIL_AUTOSEND" && Array.isArray(message.queue)) {
-    startMailAutosend(message.queue, message.countdownSeconds).then(sendResponse);
+    startMailAutosend(message.queue, message.countdownSeconds, message.perHour).then(sendResponse);
     return true; // async response
   }
   if (message && message.type === "STOP_MAIL_AUTOSEND") {

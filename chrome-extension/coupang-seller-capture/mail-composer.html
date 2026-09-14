@@ -178,14 +178,19 @@
   <div class="card">
     <h2>5. 자동 발송 (선택)</h2>
     <div class="file-hint">
-      30분마다 아직 "Gmail로 작성하기"를 누르지 않은 항목을 순서대로 열어줍니다 (시간당 약 2건). 각 작성창은 화면 앞에 열리고, 지정한 시간만큼 카운트다운하며 — 그 사이에 내용을 직접 수정할 수 있고, 시간이 되면 그 시점 내용 그대로 "보내기"를 대신 눌러줍니다. 언제든 "지금 취소"를 누르면 해당 건은 전송되지 않습니다.
+      정해진 간격으로 아직 "Gmail로 작성하기"를 누르지 않은 항목을 순서대로 열어줍니다. 각 작성창은 화면 앞에 열리고, 지정한 시간만큼 카운트다운하며 — 그 사이에 내용을 직접 수정할 수 있고, 시간이 되면 그 시점 내용 그대로 "보내기"를 대신 눌러줍니다. 언제든 "지금 취소"를 누르면 해당 건은 전송되지 않습니다.
     </div>
     <div class="row2">
+      <div>
+        <label>시간당 발송 개수 (예: 10, 30)</label>
+        <input type="text" id="perHourCount" value="2" />
+      </div>
       <div>
         <label>전송 전 대기시간(초) — 이 시간 동안 내용을 검토/수정할 수 있습니다</label>
         <input type="text" id="countdownSeconds" value="60" />
       </div>
     </div>
+    <div id="intervalHint" class="file-hint" style="margin-top:-8px;"></div>
     <div class="row2" style="margin-bottom:12px;">
       <button id="startAutosendBtn">자동 발송 시작</button>
       <button id="stopAutosendBtn">자동 발송 중지</button>

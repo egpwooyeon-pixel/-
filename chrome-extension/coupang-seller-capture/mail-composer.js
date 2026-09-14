@@ -19,18 +19,26 @@ function setStatus(text) {
 }
 
 async function loadSettings() {
-  const { senderName, subjectTemplate, bodyTemplate, composedLog: storedLog, mailAutosendCountdownSeconds } =
-    await chrome.storage.local.get([
-      "senderName",
-      "subjectTemplate",
-      "bodyTemplate",
-      "composedLog",
-      "mailAutosendCountdownSeconds",
-    ]);
+  const {
+    senderName,
+    subjectTemplate,
+    bodyTemplate,
+    composedLog: storedLog,
+    mailAutosendCountdownSeconds,
+    mailAutosendPerHour,
+  } = await chrome.storage.local.get([
+    "senderName",
+    "subjectTemplate",
+    "bodyTemplate",
+    "composedLog",
+    "mailAutosendCountdownSeconds",
+    "mailAutosendPerHour",
+  ]);
   document.getElementById("senderName").value = senderName || "";
   document.getElementById("subjectTemplate").value = subjectTemplate || DEFAULT_SUBJECT_TEMPLATE;
   document.getElementById("bodyTemplate").value = bodyTemplate || DEFAULT_BODY_TEMPLATE;
   document.getElementById("countdownSeconds").value = mailAutosendCountdownSeconds || 60;
+  document.getElementById("perHourCount").value = mailAutosendPerHour || 2;
   composedLog = storedLog || {};
 }
 
@@ -40,7 +48,28 @@ async function saveSettings() {
     subjectTemplate: document.getElementById("subjectTemplate").value,
     bodyTemplate: document.getElementById("bodyTemplate").value,
     mailAutosendCountdownSeconds: parseInt(document.getElementById("countdownSeconds").value, 10) || 60,
+    mailAutosendPerHour: getPerHourCount(),
   });
+}
+
+// Chrome clamps periodic alarms to a 1-minute minimum, so more than
+// 60/hour isn't achievable — cap the input so the UI doesn't promise
+// a rate the alarm can't actually hit.
+function getPerHourCount() {
+  const raw = parseInt(document.getElementById("perHourCount").value, 10);
+  if (!Number.isFinite(raw) || raw < 1) return 2;
+  return Math.min(raw, 60);
+}
+
+function getIntervalMinutes() {
+  return Math.max(1, Math.round(60 / getPerHourCount()));
+}
+
+function renderIntervalHint() {
+  const perHour = getPerHourCount();
+  const intervalMinutes = getIntervalMinutes();
+  document.getElementById("intervalHint").textContent =
+    `약 ${intervalMinutes}분 간격으로 1건씩 열립니다 (시간당 약 ${Math.round(60 / intervalMinutes)}건).`;
 }
 
 async function saveComposedLog() {
@@ -287,9 +316,10 @@ async function renderAutosendStatus() {
   }
   const total = state.queue.length;
   const done = state.queue.filter((q) => q.status !== "pending").length;
+  const intervalMinutes = state.intervalMinutes || getIntervalMinutes();
   startBtn.disabled = !!state.running;
   el.textContent = state.running
-    ? `자동 발송 진행 중: ${done} / ${total}건 처리됨 (30분마다 1건씩)`
+    ? `자동 발송 진행 중: ${done} / ${total}건 처리됨 (${intervalMinutes}분마다 1건씩)`
     : `자동 발송 종료: ${done} / ${total}건까지 처리됨`;
 }
 
@@ -300,16 +330,18 @@ async function handleStartAutosend() {
     return;
   }
   const countdownSeconds = parseInt(document.getElementById("countdownSeconds").value, 10) || 60;
-  const estimatedMinutes = (queue.length - 1) * 30;
+  const perHour = getPerHourCount();
+  const intervalMinutes = getIntervalMinutes();
+  const estimatedMinutes = (queue.length - 1) * intervalMinutes;
   const ok = window.confirm(
-    `${queue.length}건을 30분 간격으로(시간당 약 2건) 순서대로 Gmail 작성창을 열어 발송합니다.\n` +
+    `${queue.length}건을 ${intervalMinutes}분 간격으로(시간당 약 ${perHour}건) 순서대로 Gmail 작성창을 열어 발송합니다.\n` +
       `각 작성창은 ${countdownSeconds}초 동안 검토/수정할 수 있고, 그 후 자동으로 "보내기"가 눌립니다. 언제든 "지금 취소"로 막을 수 있습니다.\n` +
       `모두 처리되기까지 대략 ${estimatedMinutes}분 걸립니다.\n시작할까요?`
   );
   if (!ok) return;
 
   await saveSettings();
-  const response = await chrome.runtime.sendMessage({ type: "START_MAIL_AUTOSEND", queue, countdownSeconds });
+  const response = await chrome.runtime.sendMessage({ type: "START_MAIL_AUTOSEND", queue, countdownSeconds, perHour });
   if (response && response.ok === false) {
     setStatus("이미 자동 발송이 진행 중입니다.");
     return;
@@ -328,11 +360,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadSettings();
   renderRows();
   renderAutosendStatus();
+  renderIntervalHint();
   setInterval(renderAutosendStatus, 15000);
 
-  ["senderName", "subjectTemplate", "bodyTemplate", "countdownSeconds"].forEach((id) => {
+  ["senderName", "subjectTemplate", "bodyTemplate", "countdownSeconds", "perHourCount"].forEach((id) => {
     document.getElementById(id).addEventListener("change", saveSettings);
   });
+  document.getElementById("perHourCount").addEventListener("input", renderIntervalHint);
 
   document.getElementById("fileInput").addEventListener("change", (e) => {
     const file = e.target.files[0];
