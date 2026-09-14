@@ -39,6 +39,12 @@
   }
   #captureOpenTabsBtn:hover { background: #0f766e; }
   #captureOpenTabsBtn:disabled { background: #99d4cd; cursor: not-allowed; }
+  #openMailComposerBtn {
+    background: #7c3aed;
+    color: #fff;
+    font-weight: 600;
+  }
+  #openMailComposerBtn:hover { background: #6d28d9; }
   .row-buttons {
     display: flex;
     gap: 8px;
@@ -274,6 +280,8 @@
     <button id="dedupeBtn">중복 정리</button>
     <button id="clearBtn">전체 삭제</button>
   </div>
+  <button id="openMailComposerBtn">협업 메일 작성 도구 열기</button>
+  <div class="section-desc" style="margin-top:-4px;">CSV로 내보낸 엑셀(또는 다른 엑셀)을 올리면 이메일/상품명을 읽어 메일 초안을 만들어줍니다. 발송은 Gmail 작성창에서 직접 클릭해야 나갑니다.</div>
   <div id="list"></div>
   <script src="shared.js"></script>
   <script src="popup.js"></script>

@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>협업 메일 작성 도구</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 24px;
+    font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+    font-size: 14px;
+    color: #222;
+    background: #fafafa;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .subtitle { color: #6b7280; font-size: 13px; margin-bottom: 24px; }
+  .card {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin-bottom: 18px;
+  }
+  .card h2 { font-size: 14px; margin: 0 0 10px; color: #374151; }
+  label { display: block; font-size: 12px; color: #4b5563; margin-bottom: 4px; }
+  input[type="text"], textarea, select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: inherit;
+    box-sizing: border-box;
+    margin-bottom: 12px;
+  }
+  textarea { resize: vertical; min-height: 90px; line-height: 1.5; }
+  .row2 { display: flex; gap: 12px; }
+  .row2 > div { flex: 1; }
+  .template-help {
+    font-size: 11px;
+    color: #9ca3af;
+    margin: -8px 0 12px;
+  }
+  .template-help code {
+    background: #f3f4f6;
+    padding: 1px 4px;
+    border-radius: 4px;
+  }
+  #fileInput { margin-bottom: 8px; }
+  .file-hint { font-size: 12px; color: #6b7280; margin-bottom: 4px; }
+  #columnPickers { display: none; gap: 12px; margin-top: 10px; }
+  #columnPickers.active { display: flex; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  th, td {
+    border-bottom: 1px solid #eee;
+    padding: 8px 6px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { color: #6b7280; font-weight: 600; font-size: 12px; }
+  td.email { color: #374151; word-break: break-all; max-width: 160px; }
+  td.product input {
+    margin: 0;
+    padding: 6px 8px;
+    font-size: 12px;
+  }
+  td.actions { white-space: nowrap; }
+  button {
+    padding: 7px 12px;
+    border: none;
+    border-radius: 6px;
+    font-size: 12.5px;
+    cursor: pointer;
+    background: #f3f4f6;
+    color: #374151;
+    border: 1px solid #e5e7eb;
+  }
+  button:hover { background: #e5e7eb; }
+  .composeBtn {
+    background: #2563eb;
+    color: #fff;
+    border: none;
+  }
+  .composeBtn:hover { background: #1d4ed8; }
+  .composeBtn.done {
+    background: #dcfce7;
+    color: #166534;
+    border: 1px solid #bbf7d0;
+  }
+  .previewBtn { margin-left: 6px; }
+  .preview-row td {
+    background: #f9fafb;
+    font-size: 12px;
+    white-space: pre-wrap;
+    color: #374151;
+  }
+  .empty { color: #9ca3af; padding: 20px 0; text-align: center; }
+  .status-badge {
+    display: inline-block;
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    background: #eef2ff;
+    color: #4338ca;
+    margin-left: 6px;
+  }
+</style>
+</head>
+<body>
+  <h1>협업 메일 작성 도구</h1>
+  <div class="subtitle">엑셀(xlsx)을 올리면 이메일/상품명을 읽어서 메일 초안을 자동으로 만듭니다. 실제 발송은 각 줄에서 Gmail 작성창을 열어 직접 "보내기"를 눌러야 합니다 — 실제 전송은 항상 사람이 직접 합니다.</div>
+
+  <div class="card">
+    <h2>1. 보내는 사람 정보</h2>
+    <div class="row2">
+      <div>
+        <label>이름/직책 (템플릿의 {{NAME}} 자리에 들어갑니다)</label>
+        <input type="text" id="senderName" placeholder="예: 김우연 팀장" />
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>2. 메일 템플릿</h2>
+    <label>제목</label>
+    <input type="text" id="subjectTemplate" />
+    <label>본문</label>
+    <textarea id="bodyTemplate" rows="8"></textarea>
+    <div class="template-help"><code>{{PRODUCT}}</code> = 각 줄의 상품명, <code>{{NAME}}</code> = 위에서 입력한 보내는 사람 이름/직책으로 자동 치환됩니다. 자유롭게 수정하고 다음에도 재사용하세요 (자동 저장됩니다).</div>
+  </div>
+
+  <div class="card">
+    <h2>3. 엑셀 업로드</h2>
+    <div class="file-hint">이 확장프로그램에서 CSV 다운로드한 파일이면 열/이메일 컬럼을 자동으로 찾습니다. 다른 엑셀이면 아래에서 직접 컬럼을 골라주세요.</div>
+    <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" />
+    <div id="columnPickers">
+      <div style="flex:1;">
+        <label>이메일 컬럼</label>
+        <select id="emailColumnSelect"></select>
+      </div>
+      <div style="flex:1;">
+        <label>상품명 컬럼</label>
+        <select id="productColumnSelect"></select>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>4. 초안 목록</h2>
+    <div id="status" style="font-size:12px;color:#6b7280;margin-bottom:8px;"></div>
+    <table id="rowsTable">
+      <thead>
+        <tr>
+          <th>이메일</th>
+          <th>상품명 (수정 가능)</th>
+          <th>작업</th>
+        </tr>
+      </thead>
+      <tbody id="rowsBody">
+        <tr><td colspan="3" class="empty">엑셀을 업로드하면 여기에 목록이 표시됩니다.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <script src="lib/xlsx.full.min.js"></script>
+  <script src="mail-composer.js"></script>
+</body>
+</html>

@@ -521,6 +521,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("downloadBtn").addEventListener("click", handleDownload);
   document.getElementById("clearBtn").addEventListener("click", handleClear);
   document.getElementById("dedupeBtn").addEventListener("click", handleDedupeExisting);
+  document.getElementById("openMailComposerBtn").addEventListener("click", () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL("mail-composer.html") });
+  });
   document.getElementById("batchStartBtn").addEventListener("click", handleBatchStart);
   document.getElementById("keywordStartBtn").addEventListener("click", handleKeywordStart);
   document.getElementById("batchStopBtn").addEventListener("click", handleBatchStop);
