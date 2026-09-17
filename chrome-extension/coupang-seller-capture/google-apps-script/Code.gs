@@ -23,6 +23,28 @@ var SPREADSHEET_ID = "";
 
 var SHEET_NAME = "판매자정보";
 
+// A second tab kept alongside "판매자정보". That tab stays one row per
+// *product* (its whole point is a full capture log), so a seller who
+// lists 5 products ends up with 5 rows there — correct, but noisy if
+// what you actually want is a clean contact list (e.g. for the mail
+// composer). This tab instead keeps exactly one row per unique e-mail
+// (the first product seen from that seller), maintained automatically
+// by upsertSellerSummary() below every time doPost runs.
+var SUMMARY_SHEET_NAME = "판매자요약";
+
+var SUMMARY_HEADERS = [
+  "최초캡처일시",
+  "상호/대표자",
+  "사업장 소재지",
+  "e-mail",
+  "연락처",
+  "통신판매업 신고번호",
+  "사업자번호",
+  "구매안전서비스",
+  "대표 상품명",
+  "대표 상품 URL",
+];
+
 var HEADERS = [
   "캡처일시",
   "검색키워드",
@@ -63,7 +85,8 @@ function doPost(e) {
     var body = JSON.parse(e.postData.contents);
 
     if (body.action === "markSent") {
-      return jsonResponse(markRowSent(body.itemKey));
+      var sheetParam = e.parameter && e.parameter.sheet;
+      return jsonResponse(markRowSent(body.itemKey, sheetParam));
     }
 
     var records = Array.isArray(body.records)
@@ -81,6 +104,7 @@ function doPost(e) {
 
     var existingKeys = readExistingKeys(sheet);
     var rows = [];
+    var addedRecords = [];
     var duplicates = 0;
 
     records.forEach(function (record) {
@@ -96,6 +120,7 @@ function doPost(e) {
       });
       row.push(key);
       rows.push(row);
+      addedRecords.push(record);
     });
 
     if (rows.length > 0) {
@@ -104,15 +129,23 @@ function doPost(e) {
         .setValues(rows);
     }
 
-    return jsonResponse({ ok: true, added: rows.length, duplicates: duplicates });
+    var summaryAdded = upsertSellerSummary(addedRecords);
+
+    return jsonResponse({ ok: true, added: rows.length, duplicates: duplicates, summaryAdded: summaryAdded });
   } catch (err) {
     return jsonResponse({ ok: false, error: String(err) });
   }
 }
 
+// ?sheet=판매자요약 (or any other tab name) on either the GET (list)
+// or POST (markSent) URL picks that tab instead of the default
+// "판매자정보" — e.g. the mail composer can be pointed at
+// ".../exec?sheet=판매자요약" to read/mark the deduped summary tab
+// through this same deployment, without needing a second one.
 function doGet(e) {
   if (e && e.parameter && e.parameter.action === "list") {
-    return jsonResponse(listRows());
+    var sheetParam = e.parameter.sheet;
+    return jsonResponse(listRows(sheetParam));
   }
   return jsonResponse({
     ok: true,
@@ -142,9 +175,9 @@ function findHeaderColumn(headerRow, patterns) {
 // full 12-column capture-sync layout. Same object shape the mail
 // composer already gets from parsing an uploaded xlsx, so both sources
 // feed the same column-detection code there.
-function listRows() {
+function listRows(sheetName) {
   try {
-    var sheet = getOrCreateSheet();
+    var sheet = getOrCreateSheetByName(sheetName || SHEET_NAME);
     var lastRow = sheet.getLastRow();
     var lastCol = sheet.getLastColumn();
     if (lastRow < 2 || lastCol < 1) return { ok: true, rows: [] };
@@ -178,10 +211,10 @@ function listRows() {
 // email/product), this is a no-op "no_key_column" — the mail composer
 // only calls it when it detected a key column client-side, so this is
 // just a safety net, not the common path for such sheets.
-function markRowSent(itemKey) {
+function markRowSent(itemKey, sheetName) {
   if (!itemKey) return { ok: false, error: "no_item_key" };
 
-  var sheet = getOrCreateSheet();
+  var sheet = getOrCreateSheetByName(sheetName || SHEET_NAME);
   var lastRow = sheet.getLastRow();
   var lastCol = sheet.getLastColumn();
   if (lastRow < 2 || lastCol < 1) return { ok: false, error: "not_found" };
@@ -234,12 +267,117 @@ function readExistingKeys(sheet) {
 }
 
 function getOrCreateSheet() {
+  return getOrCreateSheetByName(SHEET_NAME);
+}
+
+function getOrCreateSheetByName(name) {
   var ss = SPREADSHEET_ID
     ? SpreadsheetApp.openById(SPREADSHEET_ID)
     : SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName(SHEET_NAME);
-  if (!sheet) sheet = ss.insertSheet(SHEET_NAME);
+  var sheet = ss.getSheetByName(name);
+  if (!sheet) sheet = ss.insertSheet(name);
   return sheet;
+}
+
+// Adds one row per unique e-mail to the "판매자요약" tab — only for
+// sellers not already listed there, so a seller's *first* captured
+// product is what shows up, and later products from the same seller
+// (already reflected as extra rows in "판매자정보") don't add more
+// summary rows. `records` should be just the ones that passed the
+// per-product dedup above (records with no e-mail are skipped, since
+// this tab's whole purpose is an email contact list). Returns how many
+// summary rows were actually added.
+function upsertSellerSummary(records) {
+  var withEmail = records.filter(function (r) {
+    return r && r.email;
+  });
+  if (withEmail.length === 0) return 0;
+
+  var summarySheet = getOrCreateSheetByName(SUMMARY_SHEET_NAME);
+  ensureSummaryHeader(summarySheet);
+
+  var existingEmails = readExistingSummaryEmails(summarySheet);
+  var rows = [];
+
+  withEmail.forEach(function (record) {
+    var emailKey = String(record.email).trim().toLowerCase();
+    if (!emailKey || existingEmails[emailKey]) return;
+    existingEmails[emailKey] = true; // also catches dupes within this same batch
+
+    rows.push([
+      record.capturedAt || "",
+      record.sellerName || "",
+      record.address || "",
+      record.email || "",
+      record.phone || "",
+      record.mailOrderNo || "",
+      record.bizRegNo || "",
+      record.safetyService || "",
+      record.productTitle || "",
+      record.pageUrl || "",
+    ]);
+  });
+
+  if (rows.length > 0) {
+    summarySheet
+      .getRange(summarySheet.getLastRow() + 1, 1, rows.length, SUMMARY_HEADERS.length)
+      .setValues(rows);
+  }
+  return rows.length;
+}
+
+// One-time manual backfill for a sheet that already had rows in
+// "판매자정보" before this summary tab existed (upsertSellerSummary()
+// above only runs going forward, on new doPost calls — it can't see
+// history). Not part of the web app (doGet/doPost never call it) —
+// run it once yourself from the Apps Script editor: pick
+// "backfillSellerSummaryFromExisting" in the function dropdown next to
+// the ▶ 실행 button, then run it. Safe to run more than once; emails
+// already in "판매자요약" are skipped, not duplicated.
+function backfillSellerSummaryFromExisting() {
+  var sheet = getOrCreateSheet();
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+
+  var values = sheet.getRange(2, 1, lastRow - 1, HEADERS.length).getValues();
+  var records = values
+    .filter(function (row) {
+      return row.some(function (cell) { return cell !== ""; });
+    })
+    .map(function (row) {
+      var record = {};
+      FIELD_ORDER.forEach(function (field, i) {
+        record[field] = row[i];
+      });
+      return record;
+    })
+    .filter(function (record) {
+      return record.email;
+    });
+
+  var added = upsertSellerSummary(records);
+  Logger.log("판매자요약 backfill: " + added + "건 추가됨 (기존 " + records.length + "건의 이메일 보유 상품 중)");
+}
+
+function ensureSummaryHeader(sheet) {
+  if (sheet.getLastRow() === 0) {
+    sheet.getRange(1, 1, 1, SUMMARY_HEADERS.length).setValues([SUMMARY_HEADERS]);
+    sheet.setFrozenRows(1);
+  }
+}
+
+function readExistingSummaryEmails(sheet) {
+  var lastRow = sheet.getLastRow();
+  var emails = {};
+  if (lastRow < 2) return emails;
+
+  var emailCol = SUMMARY_HEADERS.indexOf("e-mail") + 1; // 1-based
+  var values = sheet.getRange(2, emailCol, lastRow - 1, 1).getValues();
+  values.forEach(function (row) {
+    var v = row[0];
+    if (v) emails[String(v).trim().toLowerCase()] = true;
+  });
+  return emails;
 }
 
 // Writes the header row on a brand-new sheet. On a sheet from an
