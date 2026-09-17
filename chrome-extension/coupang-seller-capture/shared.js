@@ -285,14 +285,36 @@ function findProductLinksOnListingPage(rocketOnly) {
 // np/search, that page keeps one fixed URL and filters in place via its
 // own in-page search box — no ?q= URL to just open per keyword — so
 // this finds that box and types into it the way a real user would,
-// rather than navigating anywhere. The box is identified by the "취소"
-// button sitting right next to it (visible once the box has focus/text)
-// combined with its search icon, walking up from each candidate to find
-// the nearest actual <input> — deliberately NOT the site's global
-// header search bar, which is excluded. Best-effort: if Coupang changes
-// this page's markup and the box can't be found, returns
-// { ok: false, reason: "input_not_found" } so the caller can skip the
-// keyword instead of scraping an unfiltered/wrong result set.
+// rather than navigating anywhere.
+//
+// Confirmed via a live DevTools inspection (2026-09) that the box looks
+// like:
+//   <div class="styles_search_box__W4CM9">
+//     <div class="styles_search_input_box__RM7NQ">
+//       <span class="styles_search_icon__OLPGM"></span>
+//       <input type="text" class="styles_keyword_box__pF3iJ" value="...">
+//       <span class="styles_clear_keyword__pgvjN"></span>
+//     </div>
+//     <span class="...styles_search_cancel_btn__fm4G">취소</span>
+//   </div>
+// Coupang's CSS-module class names carry a build-specific hash suffix
+// (the "__pF3iJ" etc.) that rotates on redeploy, so this matches on the
+// stable human-readable prefix ("keyword_box") via a substring selector
+// rather than the exact class — same reasoning as
+// findProductCardContainer() above not trusting Coupang's card class
+// names either. The "취소" text match is kept as a second-line fallback
+// in case the prefix itself changes.
+//
+// Deliberately does NOT try to click any nearby button to submit —
+// "styles_clear_keyword__pgvjN" sits right next to the input and exists
+// specifically to blank it out, so a generic "click the nearest button"
+// fallback risks erasing the keyword we just typed instead of searching
+// it. Setting the value (which the result grid visibly reacts to when a
+// person types) plus a synthetic Enter is the safer combination.
+//
+// Best-effort: if Coupang changes this markup and the box can't be
+// found, returns { ok: false, reason: "input_not_found" } so the caller
+// can skip the keyword instead of scraping an unfiltered/wrong result set.
 async function searchSellerDealsPage(keyword) {
   const norm = (s) => (s || "").replace(/\s+/g, "");
 
@@ -301,8 +323,13 @@ async function searchSellerDealsPage(keyword) {
   }
 
   function findSearchInput() {
-    // Primary: an input whose nearby container also has a "취소" control
-    // — that pairing is specific to this page's own search widget.
+    // Primary: match on the stable part of the actual class name seen
+    // via DevTools ("styles_keyword_box__<hash>").
+    const byClass = Array.from(document.querySelectorAll('input[class*="keyword_box"]')).find(isVisible);
+    if (byClass) return byClass;
+
+    // Fallback 1: an input whose nearby container also has a "취소"
+    // control — that pairing is specific to this page's search widget.
     const cancelEls = Array.from(document.querySelectorAll("button, a, span, div")).filter(
       (el) => norm(el.textContent) === "취소" && (!el.children || el.children.length === 0) && isVisible(el)
     );
@@ -314,8 +341,9 @@ async function searchSellerDealsPage(keyword) {
         container = container.parentElement;
       }
     }
-    // Fallback: first visible non-header text input on the page that
-    // isn't the site's global search (that one lives inside <header>).
+
+    // Fallback 2: first visible non-header text input on the page —
+    // excludes the site's global header search bar.
     const inputs = Array.from(document.querySelectorAll('input[type="text"], input[type="search"], input:not([type])'));
     return inputs.find((el) => !el.closest("header") && isVisible(el)) || null;
   }
@@ -338,18 +366,6 @@ async function searchSellerDealsPage(keyword) {
   ["keydown", "keypress", "keyup"].forEach((type) => {
     input.dispatchEvent(new KeyboardEvent(type, { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
   });
-
-  // Some search widgets ignore a synthetic Enter and need their search/
-  // magnifying-glass button actually clicked — try the nearest one too.
-  let btnContainer = input.parentElement;
-  for (let hop = 0; hop < 3 && btnContainer; hop++) {
-    const btn = btnContainer.querySelector('button, [role="button"]');
-    if (btn && btn !== input) {
-      btn.click();
-      break;
-    }
-    btnContainer = btnContainer.parentElement;
-  }
 
   // Poll for the result grid to actually change instead of a fixed
   // delay, since we don't know this page's real render timing.
