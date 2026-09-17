@@ -394,10 +394,21 @@ async function captureOpenTabs() {
   await setBatchStatus({ running: false, error: stopReason });
 }
 
-async function startBatch(sourceTabId, rocketOnly) {
+// productDelaySeconds (from the popup's "상품 사이 대기시간" field)
+// overrides the default DELAY_BETWEEN_PRODUCTS_MS pacing when given —
+// lets the user slow things down further if they're seeing blocks even
+// at the default pace, without needing a code change each time.
+function resolveProductDelayMs(productDelaySeconds) {
+  const seconds = Number(productDelaySeconds);
+  if (!Number.isFinite(seconds) || seconds < 3) return DELAY_BETWEEN_PRODUCTS_MS;
+  return Math.min(seconds, 120) * 1000;
+}
+
+async function startBatch(sourceTabId, rocketOnly, productDelaySeconds) {
   isRunning = true;
   cancelRequested = false;
   stopReason = "";
+  const productDelayMs = resolveProductDelayMs(productDelaySeconds);
 
   let links = [];
   try {
@@ -456,18 +467,19 @@ async function startBatch(sourceTabId, rocketOnly) {
     });
 
     if (res.cancelled || res.blocked || cancelRequested) break;
-    if (i < capped.length - 1) await delayWithJitter(DELAY_BETWEEN_PRODUCTS_MS);
+    if (i < capped.length - 1) await delayWithJitter(productDelayMs);
   }
 
   isRunning = false;
   await setBatchStatus({ running: false, error: stopReason });
 }
 
-async function startKeywordBatch(rawKeywords, perKeywordCount, rocketOnly, source) {
+async function startKeywordBatch(rawKeywords, perKeywordCount, rocketOnly, source, productDelaySeconds) {
   isRunning = true;
   cancelRequested = false;
   stopReason = "";
   const useSellerDeals = source === "sellerDeals";
+  const productDelayMs = resolveProductDelayMs(productDelaySeconds);
 
   const keywords = rawKeywords
     .map((k) => (k || "").trim())
@@ -536,7 +548,7 @@ async function startKeywordBatch(rawKeywords, perKeywordCount, rocketOnly, sourc
         keywordStoppedEarly = true;
         break;
       }
-      if (i < capped.length - 1) await delayWithJitter(DELAY_BETWEEN_PRODUCTS_MS);
+      if (i < capped.length - 1) await delayWithJitter(productDelayMs);
     }
 
     if (keywordStoppedEarly) break;
@@ -719,7 +731,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, reason: "already_running" });
       return false;
     }
-    startBatch(message.sourceTabId, message.rocketOnly);
+    startBatch(message.sourceTabId, message.rocketOnly, message.productDelaySeconds);
     sendResponse({ ok: true });
     return false;
   }
@@ -728,7 +740,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, reason: "already_running" });
       return false;
     }
-    startKeywordBatch(message.keywords, message.perKeywordCount, message.rocketOnly, message.source);
+    startKeywordBatch(message.keywords, message.perKeywordCount, message.rocketOnly, message.source, message.productDelaySeconds);
     sendResponse({ ok: true });
     return false;
   }

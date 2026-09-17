@@ -206,12 +206,13 @@
     font-size: 12px;
     color: #4b5563;
   }
-  #perKeywordCount {
+  #perKeywordCount, #productDelaySeconds {
     width: 56px;
     padding: 4px 6px;
     border: 1px solid #e5e7eb;
     border-radius: 6px;
     font-size: 12px;
+    flex-shrink: 0;
   }
   #keywordStartBtn {
     background: #7c3aed;
@@ -249,6 +250,10 @@
 
   <hr />
   <label class="rocket-filter-row"><input type="checkbox" id="rocketOnlyCheckbox" /> 로켓 배지 상품만 수집 (판매자로켓/로켓배송/로켓프레시/로켓직구, 아래 두 기능에 공통 적용)</label>
+  <div class="keyword-count-row">
+    <span>상품 사이 대기시간(초) — 느릴수록 차단 위험이 낮습니다 (아래 두 기능에 공통 적용)</span>
+    <input type="number" id="productDelaySeconds" min="3" max="120" value="10" />
+  </div>
 
   <div class="section-title">상품목록 자동 캡처 (차단 위험 있음)</div>
   <div class="section-desc">쿠팡 검색/카테고리 목록 페이지에서 사용하세요. 화면에 보이는 상품을 순서대로 열어 판매자정보를 자동 캡처합니다. (최대 30개)</div>
