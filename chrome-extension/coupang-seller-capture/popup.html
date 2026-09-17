@@ -220,6 +220,12 @@
   }
   #keywordStartBtn:hover { background: #6d28d9; }
   #keywordStartBtn:disabled { background: #c4b5fd; cursor: not-allowed; }
+  .open-tabs-btn {
+    background: #059669;
+    color: #fff;
+  }
+  .open-tabs-btn:hover { background: #047857; }
+  .open-tabs-btn:disabled { background: #a7f3d0; cursor: not-allowed; }
   .rocket-filter-row {
     display: flex;
     align-items: flex-start;
@@ -272,6 +278,9 @@
     <input type="number" id="perKeywordCount" min="1" max="30" value="30" />
   </div>
   <button id="keywordStartBtn">키워드 자동 수집 시작</button>
+
+  <div class="section-desc" style="margin-top:8px;">위 버튼은 각 상품을 열어 정보까지 자동으로 캡처합니다. 대신 <b>탭만 순서대로 열어두고 싶다면</b> 아래 버튼을 쓰세요 — 아무 것도 자동 클릭/캡처하지 않고 새 탭만 천천히 하나씩 엽니다. 다 열린 뒤 "열려있는 쿠팡 상품 탭 모두 캡처"로 직접 캡처하면, 새 요청 없이 읽기만 하므로 가장 안전합니다.</div>
+  <button id="keywordOpenTabsBtn" class="open-tabs-btn">키워드로 상품 탭만 순서대로 열기</button>
 
   <hr />
   <div class="row-buttons">

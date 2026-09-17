@@ -293,6 +293,7 @@ function renderBatchStatus(status) {
   const barFill = document.getElementById("progressBarFill");
   const startBtn = document.getElementById("batchStartBtn");
   const keywordStartBtn = document.getElementById("keywordStartBtn");
+  const keywordOpenTabsBtn = document.getElementById("keywordOpenTabsBtn");
   const openTabsBtn = document.getElementById("captureOpenTabsBtn");
 
   const hasContent = status && (status.running || status.total > 0 || status.keywordTotal > 0);
@@ -301,21 +302,26 @@ function renderBatchStatus(status) {
     barWrap.classList.remove("active");
     startBtn.disabled = false;
     keywordStartBtn.disabled = false;
+    keywordOpenTabsBtn.disabled = false;
     openTabsBtn.disabled = false;
     return;
   }
 
-  const isKeywordMode = status.mode === "keywords";
+  const isKeywordMode = status.mode === "keywords" || status.mode === "open-tabs-keywords";
+  const isOpenTabsOnly = status.mode === "open-tabs-keywords";
   const pct = status.total > 0 ? Math.round((status.done / status.total) * 100) : 0;
   barWrap.classList.add("active");
   barFill.style.width = `${pct}%`;
   startBtn.disabled = !!status.running;
   keywordStartBtn.disabled = !!status.running;
+  keywordOpenTabsBtn.disabled = !!status.running;
   openTabsBtn.disabled = !!status.running;
 
   const titleSuffix = status.currentTitle ? " (" + status.currentTitle.slice(0, 22) + ")" : "";
 
-  if (status.running && isKeywordMode) {
+  if (status.running && isOpenTabsOnly) {
+    progressEl.innerHTML = `키워드 <b>${status.keywordDone} / ${status.keywordTotal}</b> "${status.currentKeyword}" · 탭 <b>${status.done} / ${status.total}</b>개 여는 중...`;
+  } else if (status.running && isKeywordMode) {
     progressEl.innerHTML = `키워드 <b>${status.keywordDone} / ${status.keywordTotal}</b> "${status.currentKeyword}" · 상품 <b>${status.done} / ${status.total}</b> 캡처 중...${titleSuffix}`;
   } else if (status.running) {
     progressEl.innerHTML = `<b>${status.done} / ${status.total}</b> 캡처 중...${titleSuffix}`;
@@ -336,6 +342,8 @@ function renderBatchStatus(status) {
   } else if (status.error === "blocked") {
     const doneText = isKeywordMode ? `키워드 ${status.keywordDone} / ${status.keywordTotal}` : `${status.done} / ${status.total}건`;
     progressEl.innerHTML = `<b class="blocked-warning">쿠팡이 자동 접근을 차단한 것으로 보여 작업을 즉시 멈췄습니다</b> (${doneText}까지 저장됨). 몇 시간 정도 쉬었다가 훨씬 적은 개수로 다시 시도해주세요.`;
+  } else if (isOpenTabsOnly && status.keywordTotal > 0) {
+    progressEl.innerHTML = `완료: 키워드 <b>${status.keywordDone}</b> / ${status.keywordTotal}개 · 탭 열기 종료. "열려있는 쿠팡 상품 탭 모두 캡처"로 이어서 수집하세요.`;
   } else if (isKeywordMode && status.keywordTotal > 0) {
     const dupText = status.duplicates > 0 ? `, 중복 제외 ${status.duplicates}건` : "";
     progressEl.innerHTML = `완료: 키워드 <b>${status.keywordDone}</b> / ${status.keywordTotal}개 처리${dupText}`;
@@ -444,7 +452,11 @@ async function handleBatchStart() {
   setStatus("자동 캡처를 시작했습니다.", "ok");
 }
 
-async function handleKeywordStart() {
+// Shared by handleKeywordStart and handleKeywordOpenTabs — both read
+// the same keyword textarea/count/source/rocket/pace controls, they
+// just send a different message type to background.js afterward.
+// Returns null (after setting a status message) when input is invalid.
+function readKeywordFormSettings() {
   const textarea = document.getElementById("keywordsInput");
   const countInput = document.getElementById("perKeywordCount");
 
@@ -455,7 +467,7 @@ async function handleKeywordStart() {
 
   if (allKeywords.length === 0) {
     setStatus("키워드를 한 줄에 하나씩 입력해주세요.", "error");
-    return;
+    return null;
   }
 
   const MAX_KEYWORDS = 50;
@@ -470,14 +482,23 @@ async function handleKeywordStart() {
   const rocketOnly = document.getElementById("rocketOnlyCheckbox").checked;
   const source = document.getElementById("sourceSellerDeals").checked ? "sellerDeals" : "search";
   const productDelaySeconds = getProductDelaySeconds();
-  const maxTotal = keywords.length * perKeywordCount;
-  const estimatedMinutes = Math.max(1, Math.round((keywords.length * (11 + perKeywordCount * productDelaySeconds)) / 60));
-  const rocketNote = rocketOnly ? " (로켓 배지 상품만)" : "";
   const sourceNote = source === "sellerDeals" ? "판매자특가(np/omp) 페이지 안의 검색창에" : "쿠팡 검색(np/search)으로";
   const sellerDealsWarning =
     source === "sellerDeals"
       ? "\n판매자특가 페이지는 검색창을 코드로 직접 조작하는 방식이라, 화면 구성이 바뀌면 일부 키워드에서 검색이 안 될 수 있습니다 (그런 키워드는 건너뜁니다)."
       : "";
+
+  return { keywords, perKeywordCount, rocketOnly, source, productDelaySeconds, sourceNote, sellerDealsWarning, truncatedNote };
+}
+
+async function handleKeywordStart() {
+  const settings = readKeywordFormSettings();
+  if (!settings) return;
+  const { keywords, perKeywordCount, rocketOnly, source, productDelaySeconds, sourceNote, sellerDealsWarning, truncatedNote } = settings;
+
+  const maxTotal = keywords.length * perKeywordCount;
+  const estimatedMinutes = Math.max(1, Math.round((keywords.length * (11 + perKeywordCount * productDelaySeconds)) / 60));
+  const rocketNote = rocketOnly ? " (로켓 배지 상품만)" : "";
 
   const ok = window.confirm(
     `${sourceNote} 키워드 ${keywords.length}개 × 키워드당 최대 ${perKeywordCount}개${rocketNote} = 최대 ${maxTotal}건을 수집합니다.\n한 번에 한 페이지씩만 열고, 상품 사이 약 ${productDelaySeconds}초씩 쉬면서 진행합니다(예상 약 ${estimatedMinutes}분). 팝업을 닫아도 계속됩니다.\n쿠팡이 접근을 차단하면 자동으로 즉시 멈춥니다.${sellerDealsWarning}${truncatedNote}\n시작할까요?`
@@ -497,6 +518,41 @@ async function handleKeywordStart() {
     return;
   }
   setStatus("키워드 자동 수집을 시작했습니다.", "ok");
+}
+
+// Just opens each product as its own new tab, one at a time, at the
+// user-set pace — no auto-clicking, no auto-extraction, no auto-closing.
+// The idea (per user request): opening tabs is the part that risks
+// looking bot-like, so keep that slow and minimal, then let the existing
+// "열려있는 쿠팡 상품 탭 모두 캡처" button (which only reads tabs
+// already open — no new requests) do the actual capture afterward.
+async function handleKeywordOpenTabs() {
+  const settings = readKeywordFormSettings();
+  if (!settings) return;
+  const { keywords, perKeywordCount, rocketOnly, source, productDelaySeconds, sourceNote, sellerDealsWarning, truncatedNote } = settings;
+
+  const maxTotal = keywords.length * perKeywordCount;
+  const estimatedMinutes = Math.max(1, Math.round((keywords.length * (11 + perKeywordCount * productDelaySeconds)) / 60));
+  const rocketNote = rocketOnly ? " (로켓 배지 상품만)" : "";
+
+  const ok = window.confirm(
+    `${sourceNote} 키워드 ${keywords.length}개 × 키워드당 최대 ${perKeywordCount}개${rocketNote} = 최대 ${maxTotal}개의 상품 탭을 순서대로 엽니다 (판매자정보는 캡처하지 않습니다).\n한 번에 한 탭씩만 열고, 탭 사이 약 ${productDelaySeconds}초씩 쉬면서 진행합니다(예상 약 ${estimatedMinutes}분). 탭은 닫지 않고 그대로 열어둡니다. 팝업을 닫아도 계속됩니다.\n쿠팡이 접근을 차단하면 자동으로 즉시 멈춥니다.${sellerDealsWarning}${truncatedNote}\n다 열리면 "열려있는 쿠팡 상품 탭 모두 캡처"로 직접 수집하세요.\n시작할까요?`
+  );
+  if (!ok) return;
+
+  const response = await chrome.runtime.sendMessage({
+    type: "OPEN_KEYWORD_PRODUCT_TABS",
+    keywords,
+    perKeywordCount,
+    rocketOnly,
+    source,
+    productDelaySeconds,
+  });
+  if (response && response.ok === false) {
+    setStatus("이미 다른 작업이 진행 중입니다.", "error");
+    return;
+  }
+  setStatus("상품 탭을 순서대로 여는 중입니다.", "ok");
 }
 
 async function handleBatchStop() {
@@ -552,6 +608,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   document.getElementById("batchStartBtn").addEventListener("click", handleBatchStart);
   document.getElementById("keywordStartBtn").addEventListener("click", handleKeywordStart);
+  document.getElementById("keywordOpenTabsBtn").addEventListener("click", handleKeywordOpenTabs);
   document.getElementById("batchStopBtn").addEventListener("click", handleBatchStop);
   document.getElementById("saveSheetUrlBtn").addEventListener("click", handleSaveSheetUrl);
   document.getElementById("syncNowBtn").addEventListener("click", handleSyncNow);

@@ -563,6 +563,99 @@ async function startKeywordBatch(rawKeywords, perKeywordCount, rocketOnly, sourc
   await setBatchStatus({ running: false, error: stopReason });
 }
 
+// Same keyword → link-gathering as startKeywordBatch, but instead of
+// opening each product tab, extracting, and closing it, this just opens
+// the tab and leaves it there — no click-through, no data extraction, no
+// closing. The idea (per user request): the automated part that risks
+// looking bot-like is opening pages quickly, so keep just that part,
+// pace it slowly, and let the user run the existing (safest) "열려있는
+// 쿠팡 상품 탭 모두 캡처" afterward — that one only reads tabs already
+// open, no new requests at all.
+async function startOpenProductTabs(rawKeywords, perKeywordCount, rocketOnly, source, productDelaySeconds) {
+  isRunning = true;
+  cancelRequested = false;
+  stopReason = "";
+  const useSellerDeals = source === "sellerDeals";
+  const productDelayMs = resolveProductDelayMs(productDelaySeconds);
+
+  const keywords = rawKeywords
+    .map((k) => (k || "").trim())
+    .filter((k) => k.length > 0)
+    .slice(0, MAX_KEYWORDS_PER_BATCH);
+  const perKeyword = Math.min(Math.max(1, perKeywordCount || MAX_PRODUCTS_PER_BATCH), MAX_PRODUCTS_PER_BATCH);
+
+  if (keywords.length === 0) {
+    isRunning = false;
+    await setBatchStatus({ running: false, mode: "open-tabs-keywords", error: "no_keywords" });
+    return;
+  }
+
+  await setBatchStatus({
+    running: true,
+    mode: "open-tabs-keywords",
+    keywordTotal: keywords.length,
+    keywordDone: 0,
+    currentKeyword: "",
+    total: 0,
+    done: 0,
+    failed: 0,
+    duplicates: 0,
+    currentTitle: "",
+    error: "",
+    startedAt: Date.now(),
+  });
+
+  for (let k = 0; k < keywords.length; k++) {
+    if (cancelRequested) break;
+    const keyword = keywords[k];
+    await setBatchStatus({ currentKeyword: keyword, total: 0, done: 0, currentTitle: "" });
+
+    const { links, blocked, searchFailed } = useSellerDeals
+      ? await fetchSellerDealsProductLinks(keyword, rocketOnly)
+      : await fetchKeywordProductLinks(keyword, rocketOnly);
+    if (blocked || cancelRequested) break;
+    if (searchFailed) {
+      const status = await getBatchStatus();
+      await setBatchStatus({ keywordDone: status.keywordDone + 1 });
+      if (k < keywords.length - 1) await delayWithJitter(DELAY_BETWEEN_KEYWORDS_MS);
+      continue;
+    }
+
+    const capped = links.slice(0, perKeyword);
+    await setBatchStatus({ total: capped.length });
+
+    let keywordStoppedEarly = false;
+    for (let i = 0; i < capped.length; i++) {
+      if (cancelRequested) {
+        keywordStoppedEarly = true;
+        break;
+      }
+      try {
+        await chrome.tabs.create({ url: capped[i], active: false });
+      } catch (err) {
+        // couldn't open this one; still count it and move on
+      }
+      const status = await getBatchStatus();
+      await setBatchStatus({ done: status.done + 1 });
+      if (cancelRequested) {
+        keywordStoppedEarly = true;
+        break;
+      }
+      if (i < capped.length - 1) await delayWithJitter(productDelayMs);
+    }
+
+    if (keywordStoppedEarly) break;
+
+    const status = await getBatchStatus();
+    await setBatchStatus({ keywordDone: status.keywordDone + 1 });
+
+    if (k < keywords.length - 1) await delayWithJitter(DELAY_BETWEEN_KEYWORDS_MS);
+  }
+
+  isRunning = false;
+  await setBatchStatus({ running: false, error: stopReason });
+}
+
 // --- Paced Gmail auto-send (mail-composer.html) ----------------------
 // chrome.alarms (unlike the in-memory isRunning/cancelRequested flags
 // above) survives service worker restarts — Chrome wakes the worker to
@@ -741,6 +834,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     }
     startKeywordBatch(message.keywords, message.perKeywordCount, message.rocketOnly, message.source, message.productDelaySeconds);
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (message && message.type === "OPEN_KEYWORD_PRODUCT_TABS" && Array.isArray(message.keywords)) {
+    if (isRunning) {
+      sendResponse({ ok: false, reason: "already_running" });
+      return false;
+    }
+    startOpenProductTabs(message.keywords, message.perKeywordCount, message.rocketOnly, message.source, message.productDelaySeconds);
     sendResponse({ ok: true });
     return false;
   }
