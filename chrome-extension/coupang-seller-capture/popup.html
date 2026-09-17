@@ -229,6 +229,14 @@
     cursor: pointer;
   }
   .rocket-filter-row input { margin-top: 2px; flex-shrink: 0; }
+  .source-row {
+    display: flex;
+    gap: 12px;
+    font-size: 11.5px;
+    color: #4b5563;
+    margin-bottom: 8px;
+  }
+  .source-row label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -248,7 +256,11 @@
 
   <hr />
   <div class="section-title">키워드로 자동 수집 (차단 위험 있음)</div>
-  <div class="section-desc">키워드를 한 줄에 하나씩 입력하면, 각 키워드로 쿠팡을 검색해 상위 상품들의 판매자정보를 순서대로 수집합니다. (최대 키워드 50개)</div>
+  <div class="section-desc">키워드를 한 줄에 하나씩 입력하면, 각 키워드로 검색해 상위 상품들의 판매자정보를 순서대로 수집합니다. (최대 키워드 50개)</div>
+  <div class="source-row">
+    <label><input type="radio" name="keywordSource" id="sourceSearch" value="search" checked /> 일반 검색 (np/search)</label>
+    <label><input type="radio" name="keywordSource" id="sourceSellerDeals" value="sellerDeals" /> 판매자특가 (np/omp)</label>
+  </div>
   <textarea id="keywordsInput" placeholder="예)&#10;컴퓨터책상&#10;게이밍 의자&#10;무선 청소기"></textarea>
   <div class="keyword-count-row">
     <span>키워드당 수집 개수</span>

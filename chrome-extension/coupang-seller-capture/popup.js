@@ -451,12 +451,18 @@ async function handleKeywordStart() {
   countInput.value = String(perKeywordCount);
 
   const rocketOnly = document.getElementById("rocketOnlyCheckbox").checked;
+  const source = document.getElementById("sourceSellerDeals").checked ? "sellerDeals" : "search";
   const maxTotal = keywords.length * perKeywordCount;
   const estimatedMinutes = Math.max(1, Math.round((keywords.length * (11 + perKeywordCount * 7.7)) / 60));
   const rocketNote = rocketOnly ? " (로켓 배지 상품만)" : "";
+  const sourceNote = source === "sellerDeals" ? "판매자특가(np/omp) 페이지 안의 검색창에" : "쿠팡 검색(np/search)으로";
+  const sellerDealsWarning =
+    source === "sellerDeals"
+      ? "\n판매자특가 페이지는 검색창을 코드로 직접 조작하는 방식이라, 화면 구성이 바뀌면 일부 키워드에서 검색이 안 될 수 있습니다 (그런 키워드는 건너뜁니다)."
+      : "";
 
   const ok = window.confirm(
-    `키워드 ${keywords.length}개 × 키워드당 최대 ${perKeywordCount}개${rocketNote} = 최대 ${maxTotal}건을 수집합니다.\n쿠팡에 부담을 주지 않도록 여유 있게 진행해 예상 소요 시간은 약 ${estimatedMinutes}분입니다. 팝업을 닫아도 계속됩니다.\n쿠팡이 접근을 차단하면 자동으로 즉시 멈춥니다.${truncatedNote}\n시작할까요?`
+    `${sourceNote} 키워드 ${keywords.length}개 × 키워드당 최대 ${perKeywordCount}개${rocketNote} = 최대 ${maxTotal}건을 수집합니다.\n쿠팡에 부담을 주지 않도록 여유 있게 진행해 예상 소요 시간은 약 ${estimatedMinutes}분입니다. 팝업을 닫아도 계속됩니다.\n쿠팡이 접근을 차단하면 자동으로 즉시 멈춥니다.${sellerDealsWarning}${truncatedNote}\n시작할까요?`
   );
   if (!ok) return;
 
@@ -465,6 +471,7 @@ async function handleKeywordStart() {
     keywords,
     perKeywordCount,
     rocketOnly,
+    source,
   });
   if (response && response.ok === false) {
     setStatus("이미 자동 캡처가 진행 중입니다.", "error");

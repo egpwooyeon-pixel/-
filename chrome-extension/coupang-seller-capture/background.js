@@ -40,6 +40,8 @@ function buildCoupangSearchUrl(keyword) {
   return `https://www.coupang.com/np/search?component=&q=${encodeURIComponent(keyword)}&channel=user`;
 }
 
+const SELLER_DEALS_URL = "https://www.coupang.com/np/omp";
+
 async function getBatchStatus() {
   const { batchStatus } = await chrome.storage.local.get("batchStatus");
   return (
@@ -168,6 +170,69 @@ async function fetchKeywordProductLinks(keyword, rocketOnly) {
       markBlocked();
       return { links: [], blocked: true };
     }
+
+    if (rocketOnly) {
+      const clicked = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: clickRocketFilterIfPresent,
+      });
+      if (clicked && clicked[0] && clicked[0].result) {
+        await delayWithJitter(1000);
+        if (cancelRequested) return { links: [], blocked: false };
+      }
+    }
+
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: findProductLinksOnListingPage,
+      args: [!!rocketOnly],
+    });
+    const links = (results && results[0] && results[0].result) || [];
+    return { links, blocked: false };
+  } catch (err) {
+    return { links: [], blocked: false };
+  } finally {
+    await closeTabSafely(tab.id);
+  }
+}
+
+// Same idea as fetchKeywordProductLinks, but for the "판매자특가" hub
+// page (coupang.com/np/omp) — that page has one fixed URL and filters
+// in place via its own in-page search box instead of a ?q= URL, so this
+// opens the fixed URL once and drives that search box via
+// searchSellerDealsPage() (see shared.js) rather than building a
+// per-keyword URL. searchFailed: true means the search box itself
+// couldn't be found/used (Coupang changed the page's markup) — distinct
+// from an empty result, so the caller can tell "no matches" apart from
+// "couldn't even search".
+async function fetchSellerDealsProductLinks(keyword, rocketOnly) {
+  let tab;
+  try {
+    tab = await chrome.tabs.create({ url: SELLER_DEALS_URL, active: false });
+  } catch (err) {
+    return { links: [], blocked: false };
+  }
+  try {
+    await waitForTabComplete(tab.id, TAB_LOAD_TIMEOUT_MS);
+    if (cancelRequested) return { links: [], blocked: false };
+    await delayWithJitter(DELAY_AFTER_LOAD_MS);
+    if (cancelRequested) return { links: [], blocked: false };
+
+    if (await checkBlockedOnTab(tab.id)) {
+      markBlocked();
+      return { links: [], blocked: true };
+    }
+
+    const searchResults = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: searchSellerDealsPage,
+      args: [keyword],
+    });
+    const searchOk = !!(searchResults && searchResults[0] && searchResults[0].result && searchResults[0].result.ok);
+    if (!searchOk) {
+      return { links: [], blocked: false, searchFailed: true };
+    }
+    if (cancelRequested) return { links: [], blocked: false };
 
     if (rocketOnly) {
       const clicked = await chrome.scripting.executeScript({
@@ -398,10 +463,11 @@ async function startBatch(sourceTabId, rocketOnly) {
   await setBatchStatus({ running: false, error: stopReason });
 }
 
-async function startKeywordBatch(rawKeywords, perKeywordCount, rocketOnly) {
+async function startKeywordBatch(rawKeywords, perKeywordCount, rocketOnly, source) {
   isRunning = true;
   cancelRequested = false;
   stopReason = "";
+  const useSellerDeals = source === "sellerDeals";
 
   const keywords = rawKeywords
     .map((k) => (k || "").trim())
@@ -435,8 +501,19 @@ async function startKeywordBatch(rawKeywords, perKeywordCount, rocketOnly) {
     const keyword = keywords[k];
     await setBatchStatus({ currentKeyword: keyword, total: 0, done: 0, currentTitle: "" });
 
-    const { links, blocked } = await fetchKeywordProductLinks(keyword, rocketOnly);
+    const { links, blocked, searchFailed } = useSellerDeals
+      ? await fetchSellerDealsProductLinks(keyword, rocketOnly)
+      : await fetchKeywordProductLinks(keyword, rocketOnly);
     if (blocked || cancelRequested) break;
+    if (searchFailed) {
+      // Couldn't even use the page's search box this time — skip this
+      // keyword rather than silently scraping whatever unfiltered/wrong
+      // set happened to be on screen, and keep going with the rest.
+      const status = await getBatchStatus();
+      await setBatchStatus({ keywordDone: status.keywordDone + 1 });
+      if (k < keywords.length - 1) await delayWithJitter(DELAY_BETWEEN_KEYWORDS_MS);
+      continue;
+    }
 
     const capped = links.slice(0, perKeyword);
     await setBatchStatus({ total: capped.length });
@@ -651,7 +728,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, reason: "already_running" });
       return false;
     }
-    startKeywordBatch(message.keywords, message.perKeywordCount, message.rocketOnly);
+    startKeywordBatch(message.keywords, message.perKeywordCount, message.rocketOnly, message.source);
     sendResponse({ ok: true });
     return false;
   }

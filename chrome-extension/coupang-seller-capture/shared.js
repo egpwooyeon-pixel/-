@@ -281,6 +281,88 @@ function findProductLinksOnListingPage(rocketOnly) {
   return links;
 }
 
+// Runs on the "쿠팡 판매자특가" hub page (coupang.com/np/omp). Unlike
+// np/search, that page keeps one fixed URL and filters in place via its
+// own in-page search box — no ?q= URL to just open per keyword — so
+// this finds that box and types into it the way a real user would,
+// rather than navigating anywhere. The box is identified by the "취소"
+// button sitting right next to it (visible once the box has focus/text)
+// combined with its search icon, walking up from each candidate to find
+// the nearest actual <input> — deliberately NOT the site's global
+// header search bar, which is excluded. Best-effort: if Coupang changes
+// this page's markup and the box can't be found, returns
+// { ok: false, reason: "input_not_found" } so the caller can skip the
+// keyword instead of scraping an unfiltered/wrong result set.
+async function searchSellerDealsPage(keyword) {
+  const norm = (s) => (s || "").replace(/\s+/g, "");
+
+  function isVisible(el) {
+    return !!el && el.offsetParent !== null;
+  }
+
+  function findSearchInput() {
+    // Primary: an input whose nearby container also has a "취소" control
+    // — that pairing is specific to this page's own search widget.
+    const cancelEls = Array.from(document.querySelectorAll("button, a, span, div")).filter(
+      (el) => norm(el.textContent) === "취소" && (!el.children || el.children.length === 0) && isVisible(el)
+    );
+    for (const cancelEl of cancelEls) {
+      let container = cancelEl.parentElement;
+      for (let hop = 0; hop < 4 && container; hop++) {
+        const input = container.querySelector('input[type="text"], input[type="search"], input:not([type])');
+        if (input && !input.closest("header") && isVisible(input)) return input;
+        container = container.parentElement;
+      }
+    }
+    // Fallback: first visible non-header text input on the page that
+    // isn't the site's global search (that one lives inside <header>).
+    const inputs = Array.from(document.querySelectorAll('input[type="text"], input[type="search"], input:not([type])'));
+    return inputs.find((el) => !el.closest("header") && isVisible(el)) || null;
+  }
+
+  const input = findSearchInput();
+  if (!input) return { ok: false, reason: "input_not_found" };
+
+  const beforeCount = document.querySelectorAll('a[href*="/vp/products/"]').length;
+
+  // A plain `input.value = keyword` doesn't register with a
+  // React-controlled field (React overrides the native setter to track
+  // changes), so go through the native prototype setter first, then
+  // dispatch the events React listens for.
+  const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+  input.focus();
+  nativeSetter.call(input, keyword);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+
+  ["keydown", "keypress", "keyup"].forEach((type) => {
+    input.dispatchEvent(new KeyboardEvent(type, { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+  });
+
+  // Some search widgets ignore a synthetic Enter and need their search/
+  // magnifying-glass button actually clicked — try the nearest one too.
+  let btnContainer = input.parentElement;
+  for (let hop = 0; hop < 3 && btnContainer; hop++) {
+    const btn = btnContainer.querySelector('button, [role="button"]');
+    if (btn && btn !== input) {
+      btn.click();
+      break;
+    }
+    btnContainer = btnContainer.parentElement;
+  }
+
+  // Poll for the result grid to actually change instead of a fixed
+  // delay, since we don't know this page's real render timing.
+  const start = Date.now();
+  while (Date.now() - start < 4000) {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const nowCount = document.querySelectorAll('a[href*="/vp/products/"]').length;
+    if (nowCount !== beforeCount) break;
+  }
+
+  return { ok: true };
+}
+
 // Runs on a Gmail compose tab (mail.google.com) that background.js just
 // opened via the compose URL scheme (view=cm&to=&su=&body=). Shows a
 // countdown banner and, when it reaches 0, clicks Gmail's own Send
