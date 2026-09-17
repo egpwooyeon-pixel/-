@@ -610,9 +610,47 @@ async function startOpenProductTabs(rawKeywords, perKeywordCount, rocketOnly, so
     const keyword = keywords[k];
     await setBatchStatus({ currentKeyword: keyword, total: 0, done: 0, currentTitle: "" });
 
-    const { links, blocked, searchFailed } = useSellerDeals
-      ? await fetchSellerDealsProductLinks(keyword, rocketOnly)
-      : await fetchKeywordProductLinks(keyword, rocketOnly);
+    let blocked = false;
+    let searchFailed = false;
+    let keywordStoppedEarly = false;
+
+    if (useSellerDeals) {
+      // These cards have no href to harvest up front (see
+      // clickSellerDealsProductCard in shared.js) — total is an upper
+      // bound (perKeyword) rather than a known count, since we only
+      // find out how many cards actually exist as we click through them.
+      await setBatchStatus({ total: perKeyword });
+      const result = await openSellerDealsProductTabsForKeyword(keyword, rocketOnly, perKeyword, productDelayMs);
+      blocked = result.blocked;
+      searchFailed = result.searchFailed;
+      if (cancelRequested) keywordStoppedEarly = true;
+    } else {
+      const { links, blocked: linksBlocked } = await fetchKeywordProductLinks(keyword, rocketOnly);
+      blocked = linksBlocked;
+      if (!blocked && !cancelRequested) {
+        const capped = links.slice(0, perKeyword);
+        await setBatchStatus({ total: capped.length });
+        for (let i = 0; i < capped.length; i++) {
+          if (cancelRequested) {
+            keywordStoppedEarly = true;
+            break;
+          }
+          try {
+            await chrome.tabs.create({ url: capped[i], active: false });
+          } catch (err) {
+            // couldn't open this one; still count it and move on
+          }
+          const status = await getBatchStatus();
+          await setBatchStatus({ done: status.done + 1 });
+          if (cancelRequested) {
+            keywordStoppedEarly = true;
+            break;
+          }
+          if (i < capped.length - 1) await delayWithJitter(productDelayMs);
+        }
+      }
+    }
+
     if (blocked || cancelRequested) break;
     if (searchFailed) {
       const status = await getBatchStatus();
@@ -620,30 +658,6 @@ async function startOpenProductTabs(rawKeywords, perKeywordCount, rocketOnly, so
       if (k < keywords.length - 1) await delayWithJitter(DELAY_BETWEEN_KEYWORDS_MS);
       continue;
     }
-
-    const capped = links.slice(0, perKeyword);
-    await setBatchStatus({ total: capped.length });
-
-    let keywordStoppedEarly = false;
-    for (let i = 0; i < capped.length; i++) {
-      if (cancelRequested) {
-        keywordStoppedEarly = true;
-        break;
-      }
-      try {
-        await chrome.tabs.create({ url: capped[i], active: false });
-      } catch (err) {
-        // couldn't open this one; still count it and move on
-      }
-      const status = await getBatchStatus();
-      await setBatchStatus({ done: status.done + 1 });
-      if (cancelRequested) {
-        keywordStoppedEarly = true;
-        break;
-      }
-      if (i < capped.length - 1) await delayWithJitter(productDelayMs);
-    }
-
     if (keywordStoppedEarly) break;
 
     const status = await getBatchStatus();
@@ -654,6 +668,85 @@ async function startOpenProductTabs(rawKeywords, perKeywordCount, rocketOnly, so
 
   isRunning = false;
   await setBatchStatus({ running: false, error: stopReason });
+}
+
+// Seller-deals equivalent of fetchKeywordProductLinks + the tabs.create
+// loop above, but click-driven: these cards have no href (see
+// clickSellerDealsProductCard in shared.js) — a real hand-click was
+// confirmed (by the user, live) to open the product in a brand-new tab
+// — so instead of harvesting URLs up front, this opens the search-
+// results tab once, searches it, then clicks through its cards one at a
+// time, pacing between clicks the same way every other "one page at a
+// time" flow here does. Keeps the search tab open until every click is
+// done (unlike fetchSellerDealsProductLinks, which closes it right
+// after harvesting), then closes just that one tab.
+async function openSellerDealsProductTabsForKeyword(keyword, rocketOnly, perKeyword, productDelayMs) {
+  let tab;
+  try {
+    tab = await chrome.tabs.create({ url: SELLER_DEALS_URL, active: false });
+  } catch (err) {
+    return { opened: 0, blocked: false };
+  }
+  try {
+    await waitForTabComplete(tab.id, TAB_LOAD_TIMEOUT_MS);
+    if (cancelRequested) return { opened: 0, blocked: false };
+    await delayWithJitter(DELAY_AFTER_LOAD_MS);
+    if (cancelRequested) return { opened: 0, blocked: false };
+
+    if (await checkBlockedOnTab(tab.id)) {
+      markBlocked();
+      return { opened: 0, blocked: true };
+    }
+
+    const searchResults = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: searchSellerDealsPage,
+      args: [keyword],
+    });
+    const searchOk = !!(searchResults && searchResults[0] && searchResults[0].result && searchResults[0].result.ok);
+    if (!searchOk) return { opened: 0, blocked: false, searchFailed: true };
+    if (cancelRequested) return { opened: 0, blocked: false };
+
+    if (rocketOnly) {
+      const clicked = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: clickRocketFilterIfPresent,
+      });
+      if (clicked && clicked[0] && clicked[0].result) {
+        await delayWithJitter(1000);
+        if (cancelRequested) return { opened: 0, blocked: false };
+      }
+    }
+
+    let opened = 0;
+    for (let i = 0; i < perKeyword; i++) {
+      if (cancelRequested) break;
+      let clickResult;
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: clickSellerDealsProductCard,
+          args: [i],
+        });
+        clickResult = results && results[0] && results[0].result;
+      } catch (err) {
+        break;
+      }
+      if (!clickResult || !clickResult.ok) break; // ran out of cards on this page
+
+      opened++;
+      const status = await getBatchStatus();
+      await setBatchStatus({ done: status.done + 1 });
+      if (cancelRequested) break;
+      if (i < perKeyword - 1) await delayWithJitter(productDelayMs);
+    }
+
+    return { opened };
+  } catch (err) {
+    return { opened: 0, blocked: false };
+  } finally {
+    await closeTabSafely(tab.id);
+  }
 }
 
 // --- Paced Gmail auto-send (mail-composer.html) ----------------------

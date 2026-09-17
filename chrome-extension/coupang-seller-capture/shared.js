@@ -351,7 +351,20 @@ async function searchSellerDealsPage(keyword) {
   const input = findSearchInput();
   if (!input) return { ok: false, reason: "input_not_found" };
 
-  const beforeCount = document.querySelectorAll('a[href*="/vp/products/"]').length;
+  // Confirmed via a live DevTools inspection (2026-09) that this page's
+  // product cards carry NO <a href> anywhere — no anchor on the image,
+  // the title, or any wrapper (see clickSellerDealsProductCard() below,
+  // which is what actually navigates them). So "did the search change
+  // anything" is measured by counting cards with the stable
+  // "styles_promotion_item__" class-name prefix instead of counting
+  // links. Duplicated inline (rather than calling a shared helper)
+  // because each page-injected function in this file has to stay
+  // self-contained — see the file-level comment at the top.
+  const countCards = () =>
+    Array.from(document.querySelectorAll("div")).filter((el) =>
+      Array.from(el.classList).some((c) => c.startsWith("styles_promotion_item__"))
+    ).length;
+  const beforeCount = countCards();
 
   // A plain `input.value = keyword` doesn't register with a
   // React-controlled field (React overrides the native setter to track
@@ -372,11 +385,38 @@ async function searchSellerDealsPage(keyword) {
   const start = Date.now();
   while (Date.now() - start < 4000) {
     await new Promise((resolve) => setTimeout(resolve, 300));
-    const nowCount = document.querySelectorAll('a[href*="/vp/products/"]').length;
-    if (nowCount !== beforeCount) break;
+    if (countCards() !== beforeCount) break;
   }
 
   return { ok: true };
+}
+
+// Clicks the Nth (0-based) product card on a rendered "판매자특가"
+// (np/omp) search-results page. These cards have no href to read at
+// all (confirmed via DevTools — no anchor on the image, title, or any
+// wrapper), so findProductLinksOnListingPage()'s href-scanning approach
+// (which works fine on normal np/search results) finds nothing here.
+// Clicking is the only way to navigate — and a real hand-click was
+// confirmed (by the user, live) to open the product in a brand-new tab,
+// so this is the seller-deals equivalent of just opening a product's
+// URL. Called once per product with the caller (background.js) pacing
+// the delay between calls — same shape as every other "one page at a
+// time" flow in this extension — rather than looping internally here,
+// so progress can be reported and cancellation checked after each one.
+// Cards are found by the stable "styles_promotion_item__" class-name
+// prefix (the trailing hash rotates per Coupang deploy, matched with
+// startsWith on each class token rather than a raw substring match,
+// since a raw substring would also match the plural wrapper class
+// "promo-omp-promotion_items_contain").
+function clickSellerDealsProductCard(index) {
+  const cards = Array.from(document.querySelectorAll("div")).filter((el) =>
+    Array.from(el.classList).some((c) => c.startsWith("styles_promotion_item__"))
+  );
+  const card = cards[index];
+  if (!card) return { ok: false, reason: "card_not_found", totalCards: cards.length };
+  card.scrollIntoView({ block: "center" });
+  card.click();
+  return { ok: true, totalCards: cards.length };
 }
 
 // Runs on a Gmail compose tab (mail.google.com) that background.js just
