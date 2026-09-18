@@ -468,29 +468,52 @@ function clickNaverSortOption(labelCandidates) {
 }
 
 // Loads more reviews. Confirmed (by the user, live) that this review
-// list uses infinite scroll — more cards render automatically as the
-// list is scrolled toward its current end — rather than a "다음"/
-// "더보기" button, so this scrolls the last currently-rendered review
-// card into view (plus a small nudge past it, in case the real
-// lazy-load trigger element sits just below the last card) and then
-// polls for the review count to actually increase, instead of clicking
-// anything. Cards are counted via the same
+// list uses infinite scroll rather than a "다음"/"더보기" button. The
+// first version of this only scrolled the last card into view plus a
+// small 400px nudge, once — that stopped producing new reviews after a
+// handful of loads (collected only 85 of the requested 1000), so this
+// scrolls repeatedly and more aggressively instead of a single jump:
+// each step scrolls all the way to the page's current bottom and fires
+// real "scroll" events (some lazy-load implementations listen for the
+// event itself rather than relying only on IntersectionObserver), and
+// keeps doing that — not just once — until either new review cards
+// actually appear or the page visibly stops growing after several
+// tries in a row (a real signal that there's nothing further to load,
+// vs. giving up after a single attempt). Cards are counted via the same
 // `[data-shp-contents-type="review"][data-shp-contents-id]` selector
 // extractVisibleNaverReviews() uses, so "more cards rendered" is
 // measured the same way both places.
 async function loadMoreNaverReviews() {
   const getCards = () => document.querySelectorAll('[data-shp-contents-type="review"][data-shp-contents-id]');
-  const cardsBefore = getCards();
-  const before = cardsBefore.length;
+  const scrollHeight = () => Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+  const before = getCards().length;
   if (before === 0) return { ok: false, reason: "no_cards_yet", before: 0, after: 0 };
 
-  cardsBefore[cardsBefore.length - 1].scrollIntoView({ block: "end" });
-  window.scrollBy(0, 400);
+  let lastHeight = 0;
+  let stableHeightCount = 0;
+  for (let i = 0; i < 20; i++) {
+    const cardsNow = getCards();
+    if (cardsNow.length > 0) {
+      cardsNow[cardsNow.length - 1].scrollIntoView({ block: "end" });
+    }
+    window.scrollTo(0, scrollHeight());
+    window.dispatchEvent(new Event("scroll"));
+    document.dispatchEvent(new Event("scroll"));
 
-  const start = Date.now();
-  while (Date.now() - start < 5000) {
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
     if (getCards().length > before) break;
+
+    const nowHeight = scrollHeight();
+    stableHeightCount = nowHeight === lastHeight ? stableHeightCount + 1 : 0;
+    lastHeight = nowHeight;
+    if (stableHeightCount >= 4) break; // page genuinely stopped growing after repeated tries
+  }
+
+  // Give one last in-flight fetch a bit more time to resolve.
+  const start = Date.now();
+  while (Date.now() - start < 4000 && getCards().length === before) {
+    await new Promise((resolve) => setTimeout(resolve, 400));
   }
 
   const after = getCards().length;
