@@ -283,6 +283,19 @@
   <div class="section-desc" style="margin-top:8px;">위 버튼은 각 상품을 열어 정보까지 자동으로 캡처합니다. 대신 <b>탭만 순서대로 열어두고 싶다면</b> 아래 버튼을 쓰세요 — 아무 것도 자동 클릭/캡처하지 않고 새 탭만 천천히 하나씩 엽니다. 다 열린 뒤 "열려있는 쿠팡 상품 탭 모두 캡처"로 직접 캡처하면, 새 요청 없이 읽기만 하므로 가장 안전합니다.</div>
   <button id="keywordOpenTabsBtn" class="open-tabs-btn">키워드로 상품 탭만 순서대로 열기</button>
 
+  <div class="section-desc" style="margin-top:8px;"><b>"탭 열기" → "열려있는 탭 캡처하고 닫기"를 계속 반복하고 싶다면</b> 아래를 쓰세요. 위에서 정한 검색 대상/키워드/키워드당 개수/로켓 필터/상품 사이 대기시간을 그대로 써서, 정해진 간격마다 이 두 단계를 자동으로 반복합니다 — 캡처는 항상 "성공한 탭 자동 닫기"로 진행됩니다.</div>
+  <div class="keyword-count-row">
+    <span>반복 간격(분)</span>
+    <input type="number" id="repeatIntervalMinutes" min="1" max="180" value="15" />
+  </div>
+  <div class="keyword-count-row">
+    <span>최대 반복 횟수 (안전장치)</span>
+    <input type="number" id="repeatMaxCycles" min="1" max="200" value="20" />
+  </div>
+  <button id="repeatCycleStartBtn" class="open-tabs-btn">자동 반복 실행 시작</button>
+  <div id="repeatCycleProgress" class="section-desc" style="margin-top:-2px;"></div>
+  <div class="section-desc" style="margin-top:-4px;">중지하려면 아래 "중지" 버튼을 누르세요 — 반복 실행도 함께 멈춥니다.</div>
+
   <hr />
   <div class="row-buttons">
     <button id="batchStopBtn">중지</button>

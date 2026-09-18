@@ -658,6 +658,73 @@ async function handleKeywordOpenTabs() {
   setStatus("상품 탭을 순서대로 여는 중입니다.", "ok");
 }
 
+// Chains "키워드로 상품 탭만 순서대로 열기" and "열려있는 쿠팡 상품 탭
+// 모두 캡처" (with auto-close on) into a repeating cycle — matches the
+// manual routine the user described: open tabs for a couple of
+// keywords, capture+close them, repeat. Shares the same keyword/source/
+// rocket/pace settings as the two buttons above it.
+async function handleRepeatCycleStart() {
+  const settings = readKeywordFormSettings();
+  if (!settings) return;
+  const { keywords, perKeywordCount, rocketOnly, source, productDelaySeconds, sourceNote, sellerDealsWarning, truncatedNote } = settings;
+
+  const intervalInput = document.getElementById("repeatIntervalMinutes");
+  const maxCyclesInput = document.getElementById("repeatMaxCycles");
+
+  let cycleIntervalMinutes = parseInt(intervalInput.value, 10);
+  if (!Number.isFinite(cycleIntervalMinutes) || cycleIntervalMinutes < 1) cycleIntervalMinutes = 15;
+  intervalInput.value = String(cycleIntervalMinutes);
+
+  let maxCycles = parseInt(maxCyclesInput.value, 10);
+  if (!Number.isFinite(maxCycles) || maxCycles < 1) maxCycles = 20;
+  maxCyclesInput.value = String(maxCycles);
+
+  const rocketNote = rocketOnly ? " (로켓 배지 상품만)" : "";
+  const ok = window.confirm(
+    `${sourceNote} 키워드 ${keywords.length}개${rocketNote}로 "상품 탭 열기 → 열려있는 탭 캡처하고 닫기"를 ${cycleIntervalMinutes}분 간격으로 최대 ${maxCycles}회 반복합니다.\n` +
+      `팝업을 닫아도 계속됩니다. 쿠팡이 접근을 차단하면 자동으로 즉시 멈춥니다. 언제든 "중지" 버튼으로 멈출 수 있습니다.${sellerDealsWarning}${truncatedNote}\n시작할까요?`
+  );
+  if (!ok) return;
+
+  const response = await chrome.runtime.sendMessage({
+    type: "START_REPEAT_CYCLE",
+    keywords,
+    perKeywordCount,
+    rocketOnly,
+    source,
+    productDelaySeconds,
+    cycleIntervalMinutes,
+    maxCycles,
+  });
+  if (response && response.ok === false) {
+    setStatus("이미 다른 작업이 진행 중입니다.", "error");
+    return;
+  }
+  setStatus("자동 반복 실행을 시작했습니다.", "ok");
+  renderRepeatCycleStatus();
+}
+
+async function renderRepeatCycleStatus() {
+  const state = await chrome.runtime.sendMessage({ type: "GET_REPEAT_CYCLE_STATUS" });
+  const el = document.getElementById("repeatCycleProgress");
+  const startBtn = document.getElementById("repeatCycleStartBtn");
+  if (!state || !state.running) {
+    startBtn.disabled = false;
+    if (state && state.error === "blocked") {
+      el.innerHTML = `<b class="blocked-warning">쿠팡이 자동 접근을 차단한 것으로 보여 반복 실행을 멈췄습니다.</b> (총 ${state.cycleCount}회 반복됨)`;
+    } else if (state && state.error === "cancelled") {
+      el.textContent = `중지됨: 총 ${state.cycleCount}회 반복됨`;
+    } else if (state && state.cycleCount > 0) {
+      el.textContent = `반복 실행 종료: 총 ${state.cycleCount}회 반복됨`;
+    } else {
+      el.textContent = "";
+    }
+    return;
+  }
+  startBtn.disabled = true;
+  el.innerHTML = `자동 반복 실행 중 — <b>${state.cycleCount}</b> / ${state.maxCycles}회차, 현재: ${state.phase || "대기 중"}`;
+}
+
 async function handleBatchStop() {
   const stopBtn = document.getElementById("batchStopBtn");
   stopBtn.disabled = true;
@@ -685,6 +752,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("sheetUrlInput").value = await getSheetWebAppUrl();
   renderSheetSyncStatus();
   renderNaverReviewStatus();
+  renderRepeatCycleStatus();
 
   if (batchStatus && batchStatus.running) {
     // The stored state says a batch is running; ping the background
@@ -697,6 +765,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (area !== "local") return;
     if (changes.batchStatus) renderBatchStatus(changes.batchStatus.newValue);
     if (changes.naverReviewStatus) renderNaverReviewStatus();
+    if (changes.repeatCycleState) renderRepeatCycleStatus();
     if (changes.records) {
       renderList(Array.isArray(changes.records.newValue) ? changes.records.newValue : []);
       renderSheetSyncStatus();
@@ -714,6 +783,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("batchStartBtn").addEventListener("click", handleBatchStart);
   document.getElementById("keywordStartBtn").addEventListener("click", handleKeywordStart);
   document.getElementById("keywordOpenTabsBtn").addEventListener("click", handleKeywordOpenTabs);
+  document.getElementById("repeatCycleStartBtn").addEventListener("click", handleRepeatCycleStart);
   document.getElementById("batchStopBtn").addEventListener("click", handleBatchStop);
   document.getElementById("saveSheetUrlBtn").addEventListener("click", handleSaveSheetUrl);
   document.getElementById("syncNowBtn").addEventListener("click", handleSyncNow);

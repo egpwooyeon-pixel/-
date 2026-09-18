@@ -22,6 +22,14 @@ let isRunning = false;
 let cancelRequested = false;
 let stopReason = ""; // "cancelled" | "blocked" | ""
 
+// Mirrors repeatCycleState.running (chrome.storage) in memory so the
+// other "already_running" guards below can check it synchronously,
+// without an extra storage round-trip on every button click. Reset to
+// false on service-worker startup and reconstructed from storage if a
+// cycle was actually still running — see the startup reconciliation
+// block at the bottom.
+let repeatCycleRunning = false;
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -936,6 +944,133 @@ async function startNaverReviewCollection(tabId) {
   await setNaverReviewStatus({ running: false, error: cancelRequested ? "cancelled" : "" });
 }
 
+// --- 자동 반복 실행 (탭 열기 → 열려있는 탭 캡처+닫기를 주기적으로 반복) ----
+// Chains the two existing, already-safe steps the user was doing by
+// hand every time — "키워드로 상품 탭만 순서대로 열기" then "열려있는
+// 쿠팡 상품 탭 모두 캡처" with auto-close on — into one repeating cycle,
+// on a timer. Uses chrome.alarms rather than a plain setTimeout loop for
+// the wait between cycles (same reasoning as the mail auto-send feature
+// above): a bare in-memory delay can't survive Chrome killing an idle
+// MV3 service worker, but an alarm does — Chrome wakes the worker
+// specifically to fire it, so a multi-minute gap between cycles doesn't
+// require this service worker to somehow stay alive the whole time.
+const REPEAT_CYCLE_ALARM_NAME = "repeatCycleTick";
+
+async function getRepeatCycleState() {
+  const { repeatCycleState } = await chrome.storage.local.get("repeatCycleState");
+  return (
+    repeatCycleState || {
+      running: false,
+      keywords: [],
+      perKeywordCount: 10,
+      rocketOnly: false,
+      source: "sellerDeals",
+      productDelaySeconds: 10,
+      cycleIntervalMinutes: 15,
+      maxCycles: 20,
+      cycleCount: 0,
+      phase: "",
+      error: "",
+    }
+  );
+}
+
+async function setRepeatCycleState(patch) {
+  const current = await getRepeatCycleState();
+  const next = { ...current, ...patch };
+  await chrome.storage.local.set({ repeatCycleState: next });
+  return next;
+}
+
+// One full cycle: open tabs for the configured keywords, wait for that
+// to finish, then capture+close whatever Coupang product tabs are open
+// (not just the ones this cycle opened — same as the manual button),
+// then leave the alarm to fire the next cycle later. If a previous
+// cycle is somehow still mid-flight when the alarm fires again (it ran
+// long), this tick just no-ops rather than overlapping with it.
+async function runOneRepeatCycle() {
+  const state = await getRepeatCycleState();
+  if (!state.running) return;
+  if (isRunning) return;
+
+  if (state.cycleCount >= state.maxCycles) {
+    await chrome.alarms.clear(REPEAT_CYCLE_ALARM_NAME);
+    repeatCycleRunning = false;
+    await setRepeatCycleState({ running: false, phase: "" });
+    return;
+  }
+
+  await setRepeatCycleState({ phase: "상품 탭 여는 중" });
+  await startOpenProductTabs(
+    state.keywords,
+    state.perKeywordCount,
+    state.rocketOnly,
+    state.source,
+    state.productDelaySeconds
+  );
+
+  if (stopReason === "blocked" || cancelRequested) {
+    await chrome.alarms.clear(REPEAT_CYCLE_ALARM_NAME);
+    repeatCycleRunning = false;
+    await setRepeatCycleState({ running: false, phase: "", error: stopReason || "cancelled" });
+    return;
+  }
+
+  await setRepeatCycleState({ phase: "열려있는 탭 캡처 중" });
+  await captureOpenTabs(true);
+
+  if (stopReason === "blocked" || cancelRequested) {
+    await chrome.alarms.clear(REPEAT_CYCLE_ALARM_NAME);
+    repeatCycleRunning = false;
+    await setRepeatCycleState({ running: false, phase: "", error: stopReason || "cancelled" });
+    return;
+  }
+
+  const latest = await getRepeatCycleState();
+  await setRepeatCycleState({ cycleCount: latest.cycleCount + 1, phase: "다음 회차 대기 중" });
+}
+
+async function startRepeatCycle(
+  keywords,
+  perKeywordCount,
+  rocketOnly,
+  source,
+  productDelaySeconds,
+  cycleIntervalMinutes,
+  maxCycles
+) {
+  const state = await getRepeatCycleState();
+  if (state.running || isRunning || repeatCycleRunning) return { ok: false, reason: "already_running" };
+
+  const intervalMinutes = Math.max(1, cycleIntervalMinutes || 15);
+
+  repeatCycleRunning = true;
+  await setRepeatCycleState({
+    running: true,
+    keywords,
+    perKeywordCount,
+    rocketOnly,
+    source,
+    productDelaySeconds,
+    cycleIntervalMinutes: intervalMinutes,
+    maxCycles: Math.max(1, maxCycles || 20),
+    cycleCount: 0,
+    phase: "",
+    error: "",
+    startedAt: Date.now(),
+  });
+
+  await chrome.alarms.create(REPEAT_CYCLE_ALARM_NAME, { periodInMinutes: intervalMinutes });
+  runOneRepeatCycle(); // first cycle right away instead of waiting a full interval
+  return { ok: true };
+}
+
+async function stopRepeatCycle() {
+  await chrome.alarms.clear(REPEAT_CYCLE_ALARM_NAME);
+  repeatCycleRunning = false;
+  await setRepeatCycleState({ running: false, phase: "" });
+}
+
 // --- Paced Gmail auto-send (mail-composer.html) ----------------------
 // chrome.alarms (unlike the in-memory isRunning/cancelRequested flags
 // above) survives service worker restarts — Chrome wakes the worker to
@@ -1057,6 +1192,7 @@ async function processNextMailAutosendItem() {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === MAIL_AUTOSEND_ALARM_NAME) processNextMailAutosendItem();
+  if (alarm.name === REPEAT_CYCLE_ALARM_NAME) runOneRepeatCycle();
 });
 
 // Chrome clamps a periodic alarm to a 1-minute minimum, which caps the
@@ -1100,7 +1236,7 @@ async function stopMailAutosend() {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message && message.type === "START_BATCH" && message.sourceTabId) {
-    if (isRunning) {
+    if (isRunning || repeatCycleRunning) {
       sendResponse({ ok: false, reason: "already_running" });
       return false;
     }
@@ -1109,7 +1245,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
   if (message && message.type === "START_KEYWORD_BATCH" && Array.isArray(message.keywords)) {
-    if (isRunning) {
+    if (isRunning || repeatCycleRunning) {
       sendResponse({ ok: false, reason: "already_running" });
       return false;
     }
@@ -1118,7 +1254,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
   if (message && message.type === "OPEN_KEYWORD_PRODUCT_TABS" && Array.isArray(message.keywords)) {
-    if (isRunning) {
+    if (isRunning || repeatCycleRunning) {
       sendResponse({ ok: false, reason: "already_running" });
       return false;
     }
@@ -1127,7 +1263,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
   if (message && message.type === "CAPTURE_OPEN_TABS") {
-    if (isRunning) {
+    if (isRunning || repeatCycleRunning) {
       sendResponse({ ok: false, reason: "already_running" });
       return false;
     }
@@ -1138,15 +1274,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message && message.type === "STOP_BATCH") {
     cancelRequested = true;
     stopReason = "cancelled";
-    sendResponse({ ok: true, wasRunning: isRunning });
+    if (repeatCycleRunning) stopRepeatCycle(); // also stops any repeat cycle waiting between rounds
+    sendResponse({ ok: true, wasRunning: isRunning || repeatCycleRunning });
     return false;
   }
   if (message && message.type === "PING") {
     sendResponse({ ok: true, isRunning });
     return false;
   }
+  if (message && message.type === "START_REPEAT_CYCLE" && Array.isArray(message.keywords)) {
+    startRepeatCycle(
+      message.keywords,
+      message.perKeywordCount,
+      message.rocketOnly,
+      message.source,
+      message.productDelaySeconds,
+      message.cycleIntervalMinutes,
+      message.maxCycles
+    ).then(sendResponse);
+    return true; // async response
+  }
+  if (message && message.type === "GET_REPEAT_CYCLE_STATUS") {
+    getRepeatCycleState().then(sendResponse);
+    return true;
+  }
   if (message && message.type === "START_NAVER_REVIEW_COLLECTION" && message.tabId) {
-    if (isRunning) {
+    if (isRunning || repeatCycleRunning) {
       sendResponse({ ok: false, reason: "already_running" });
       return false;
     }
@@ -1227,4 +1380,13 @@ chrome.commands.onCommand.addListener(async (command) => {
   if (naverStatus.running && !isRunning) {
     await setNaverReviewStatus({ running: false, error: "interrupted" });
   }
+  // Unlike the two above, an active repeat cycle isn't marked
+  // "interrupted" here — its REPEAT_CYCLE_ALARM_NAME alarm survives this
+  // restart just like it does, and will keep firing on schedule. Only
+  // the in-memory repeatCycleRunning mirror needs restoring so the
+  // "already_running" guards work correctly again; the next alarm tick
+  // just starts a fresh cycle (any sub-step lost mid-flight isn't
+  // resumed, but nothing is left stuck).
+  const repeatCycle = await getRepeatCycleState();
+  if (repeatCycle.running) repeatCycleRunning = true;
 })();
