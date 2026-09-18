@@ -467,34 +467,34 @@ function clickNaverSortOption(labelCandidates) {
   return { ok: false, reason: "sort_control_not_found" };
 }
 
-// Advances to the next page of the review list. Still unverified
-// against a real pagination/"더보기" control (not yet seen via
-// DevTools) — tries the most common visible-text patterns as a first
-// guess. Important: real review cards were shown to reuse the exact
-// text "더보기" for two OTHER, unrelated things — expanding one
-// review's own truncated text (`data-shp-area-id="optmore"`,
-// `aria-labelledby="review_option_… review_content_…"`) and expanding a
-// seller's truncated reply (`data-shp-area-id="selmore"`) — so those are
-// explicitly excluded here to avoid clicking the wrong "더보기" and
-// merely expanding one card instead of loading the next page.
-function goToNextNaverReviewPage() {
-  const norm = (s) => (s || "").replace(/\s+/g, "");
-  const excludedAreaIds = ["optmore", "selmore"];
-  const candidates = Array.from(document.querySelectorAll("button, a, span, div, li"));
-  const next = candidates.find((el) => {
-    if (el.children && el.children.length > 2) return false;
-    if (el.offsetParent === null) return false;
-    const areaId = el.getAttribute && el.getAttribute("data-shp-area-id");
-    if (areaId && excludedAreaIds.indexOf(areaId) !== -1) return false;
-    const labelledBy = el.getAttribute && el.getAttribute("aria-labelledby");
-    if (labelledBy && /review_(content|option)_/.test(labelledBy)) return false;
-    const t = norm(el.textContent);
-    return t === "다음" || t === "다음페이지" || t === "더보기" || t === "다음리뷰" || t === ">";
-  });
-  if (!next) return { ok: false, reason: "next_control_not_found" };
-  next.scrollIntoView({ block: "center" });
-  next.click();
-  return { ok: true, label: next.textContent.trim() };
+// Loads more reviews. Confirmed (by the user, live) that this review
+// list uses infinite scroll — more cards render automatically as the
+// list is scrolled toward its current end — rather than a "다음"/
+// "더보기" button, so this scrolls the last currently-rendered review
+// card into view (plus a small nudge past it, in case the real
+// lazy-load trigger element sits just below the last card) and then
+// polls for the review count to actually increase, instead of clicking
+// anything. Cards are counted via the same
+// `[data-shp-contents-type="review"][data-shp-contents-id]` selector
+// extractVisibleNaverReviews() uses, so "more cards rendered" is
+// measured the same way both places.
+async function loadMoreNaverReviews() {
+  const getCards = () => document.querySelectorAll('[data-shp-contents-type="review"][data-shp-contents-id]');
+  const cardsBefore = getCards();
+  const before = cardsBefore.length;
+  if (before === 0) return { ok: false, reason: "no_cards_yet", before: 0, after: 0 };
+
+  cardsBefore[cardsBefore.length - 1].scrollIntoView({ block: "end" });
+  window.scrollBy(0, 400);
+
+  const start = Date.now();
+  while (Date.now() - start < 5000) {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    if (getCards().length > before) break;
+  }
+
+  const after = getCards().length;
+  return { ok: after > before, before, after };
 }
 
 // Reads every review card currently rendered. Each review's content

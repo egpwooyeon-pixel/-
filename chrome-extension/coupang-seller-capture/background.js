@@ -752,11 +752,12 @@ async function openSellerDealsProductTabsForKeyword(keyword, rocketOnly, perKeyw
 // --- 네이버 스토어 리뷰 수집 -----------------------------------------
 // Reuses the same isRunning/cancelRequested flags as the Coupang batch
 // flows above (only one automated run at a time, and "중지" works the
-// same way), and the same pacing philosophy (one page at a time, with a
-// jittered delay between page loads) rather than hammering the review
-// list quickly. The actual DOM-reading functions this calls
-// (clickNaverSortOption / goToNextNaverReviewPage / extractVisibleNaverReviews,
-// all in shared.js) are a first best-effort guess — see the README.
+// same way), and the same pacing philosophy (one scroll-load at a time,
+// with a jittered delay between them) rather than hammering the
+// (infinite-scroll) review list quickly. clickNaverSortOption,
+// loadMoreNaverReviews and extractVisibleNaverReviews (all in
+// shared.js) were built and confirmed against real page markup the
+// user provided — see the README for what's still unverified.
 
 const NAVER_REVIEW_PAGE_DELAY_MS = 3000;
 const NAVER_REVIEW_TARGET_PER_SORT = 500;
@@ -909,7 +910,7 @@ async function startNaverReviewCollection(tabId) {
       try {
         const nextResults = await chrome.scripting.executeScript({
           target: { tabId },
-          func: goToNextNaverReviewPage,
+          func: loadMoreNaverReviews,
         });
         hasNext = !!(nextResults && nextResults[0] && nextResults[0].result && nextResults[0].result.ok);
       } catch (err) {
