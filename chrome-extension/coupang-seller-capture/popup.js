@@ -464,12 +464,14 @@ async function handleCaptureOpenTabs() {
     return;
   }
 
+  const closeAfterCapture = document.getElementById("closeTabsAfterCaptureCheckbox").checked;
+  const closeNote = closeAfterCapture ? "\n캡처에 성공한 탭은 자동으로 닫힙니다 (실패한 탭은 확인할 수 있게 남겨둡니다)." : "";
   const ok = window.confirm(
-    `현재 열려있는 쿠팡 상품 탭 ${productTabs.length}개에서 판매자정보를 읽어옵니다.\n새로 페이지를 열거나 요청을 보내지 않고, 이미 열려있는 탭만 읽습니다.\n시작할까요?`
+    `현재 열려있는 쿠팡 상품 탭 ${productTabs.length}개에서 판매자정보를 읽어옵니다.\n새로 페이지를 열거나 요청을 보내지 않고, 이미 열려있는 탭만 읽습니다.${closeNote}\n시작할까요?`
   );
   if (!ok) return;
 
-  const response = await chrome.runtime.sendMessage({ type: "CAPTURE_OPEN_TABS" });
+  const response = await chrome.runtime.sendMessage({ type: "CAPTURE_OPEN_TABS", closeAfterCapture });
   if (response && response.ok === false) {
     setStatus("이미 다른 캡처 작업이 진행 중입니다.", "error");
     return;

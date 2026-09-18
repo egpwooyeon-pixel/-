@@ -339,7 +339,7 @@ async function findOpenProductTabs() {
 // creating any new navigation. No new HTTP requests originate from
 // this extension here, so it carries essentially none of the
 // request-pattern risk the auto-navigating batch modes do.
-async function captureOpenTabs() {
+async function captureOpenTabs(closeAfterCapture) {
   isRunning = true;
   cancelRequested = false;
   stopReason = "";
@@ -382,7 +382,16 @@ async function captureOpenTabs() {
         duplicates: status.duplicates + (added ? 0 : 1),
         currentTitle: result.data.productTitle,
       });
+      if (closeAfterCapture) {
+        try {
+          await chrome.tabs.remove(tab.id);
+        } catch (err) {
+          // tab may already be closed; nothing to do
+        }
+      }
     } else {
+      // Deliberately left open even when closeAfterCapture is on — a
+      // failed tab is exactly the one the user needs to go look at.
       await setBatchStatus({ done: status.done + 1, failed: status.failed + 1 });
     }
 
@@ -1122,7 +1131,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, reason: "already_running" });
       return false;
     }
-    captureOpenTabs();
+    captureOpenTabs(message.closeAfterCapture);
     sendResponse({ ok: true });
     return false;
   }
