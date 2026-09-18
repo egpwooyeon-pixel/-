@@ -308,6 +308,17 @@
   </div>
   <button id="openMailComposerBtn">협업 메일 작성 도구 열기</button>
   <div class="section-desc" style="margin-top:-4px;">CSV로 내보낸 엑셀(또는 다른 엑셀)을 올리면 이메일/상품명을 읽어 메일 초안을 만들어줍니다. 발송은 Gmail 작성창에서 직접 클릭해야 나갑니다.</div>
+
+  <hr />
+  <div class="section-title">네이버 스토어 리뷰 수집 (베타)</div>
+  <div class="section-desc">네이버 스마트스토어/브랜드스토어 상품페이지를 열고 리뷰 영역까지 스크롤해서 리뷰 목록이 보이는 상태로 만든 뒤 사용하세요. <b>최신순 500개 + 평점낮은순 500개</b>를 순서대로 모읍니다(둘 다 모을 대상이 없으면 그보다 적게 모일 수 있습니다). 실제 네이버 페이지에서 아직 충분히 검증되지 않은 베타 기능이라, 정렬/다음 버튼을 못 찾으면 조용히 건너뜁니다 — 진행 메시지를 확인해주세요.</div>
+  <button id="naverReviewStartBtn">리뷰 수집 시작</button>
+  <div class="row-buttons">
+    <button id="naverReviewStopBtn">중지</button>
+    <button id="naverReviewDownloadBtn">리뷰 CSV 다운로드</button>
+  </div>
+  <div id="naverReviewProgress" class="section-desc" style="margin-top:-2px;"></div>
+
   <div id="list"></div>
   <script src="shared.js"></script>
   <script src="popup.js"></script>

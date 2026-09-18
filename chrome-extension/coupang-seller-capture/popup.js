@@ -189,6 +189,107 @@ async function handleDownload() {
   }
 }
 
+// --- 네이버 스토어 리뷰 수집 (베타) -----------------------------------
+
+const NAVER_REVIEW_CSV_COLUMNS = [
+  { key: "sortLabel", header: "정렬기준" },
+  { key: "rating", header: "평점" },
+  { key: "reviewerId", header: "작성자" },
+  { key: "date", header: "작성일" },
+  { key: "option", header: "구매옵션" },
+  { key: "body", header: "리뷰내용" },
+  { key: "isBest", header: "베스트여부" },
+  { key: "photoCount", header: "첨부사진수" },
+  { key: "pageUrl", header: "상품 URL" },
+  { key: "capturedAt", header: "캡처일시" },
+];
+
+function buildNaverReviewCsv(reviews) {
+  const header = NAVER_REVIEW_CSV_COLUMNS.map((c) => csvEscape(c.header)).join(",");
+  const rows = reviews.map((r) => NAVER_REVIEW_CSV_COLUMNS.map((c) => csvEscape(r[c.key])).join(","));
+  return [header, ...rows].join("\r\n");
+}
+
+async function handleNaverReviewStart() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !tab.id) {
+    setStatus("현재 탭을 확인할 수 없습니다.", "error");
+    return;
+  }
+  if (!tab.url || !/(brand|smartstore)\.naver\.com/i.test(tab.url)) {
+    setStatus("네이버 스마트스토어/브랜드스토어 상품페이지에서 사용해주세요.", "error");
+    return;
+  }
+
+  const ok = window.confirm(
+    `현재 탭에서 리뷰를 "최신순" 500개, "평점 낮은순" 500개 순서대로 모읍니다.\n` +
+      `페이지 사이 약 3초씩 쉬면서 진행하며, 리뷰 영역이 화면에 보이는 상태여야 정렬/다음 버튼을 찾을 수 있습니다.\n` +
+      `아직 실제 사이트에서 충분히 검증되지 않은 베타 기능이라 일부 상품에서 동작하지 않을 수 있습니다.\n시작할까요?`
+  );
+  if (!ok) return;
+
+  const response = await chrome.runtime.sendMessage({ type: "START_NAVER_REVIEW_COLLECTION", tabId: tab.id });
+  if (response && response.ok === false) {
+    setStatus("이미 다른 작업이 진행 중입니다.", "error");
+    return;
+  }
+  setStatus("네이버 리뷰 수집을 시작했습니다.", "ok");
+  renderNaverReviewStatus();
+}
+
+async function handleNaverReviewStop() {
+  await chrome.runtime.sendMessage({ type: "STOP_BATCH" });
+  setStatus("네이버 리뷰 수집을 중지했습니다.", "ok");
+  renderNaverReviewStatus();
+}
+
+async function handleNaverReviewDownload() {
+  const { naverReviews } = await chrome.storage.local.get("naverReviews");
+  const reviews = Array.isArray(naverReviews) ? naverReviews : [];
+  if (reviews.length === 0) {
+    setStatus("수집된 리뷰가 없습니다.", "error");
+    return;
+  }
+  const csv = "﻿" + buildNaverReviewCsv(reviews);
+  const base64 = toBase64Utf8(csv);
+  const dateStr = formatDateTime(new Date()).replace(/[:\s]/g, "-");
+  try {
+    await chrome.downloads.download({
+      url: `data:text/csv;charset=utf-8;base64,${base64}`,
+      filename: `naver_reviews_${dateStr}.csv`,
+      saveAs: true,
+    });
+    setStatus("리뷰 CSV 다운로드를 시작했습니다.", "ok");
+  } catch (err) {
+    setStatus("다운로드에 실패했습니다.", "error");
+  }
+}
+
+async function renderNaverReviewStatus() {
+  const status = await chrome.runtime.sendMessage({ type: "GET_NAVER_REVIEW_STATUS" });
+  const el = document.getElementById("naverReviewProgress");
+  const startBtn = document.getElementById("naverReviewStartBtn");
+  if (!status || (!status.running && !status.total)) {
+    el.textContent = "";
+    startBtn.disabled = !!(status && status.running);
+    return;
+  }
+  startBtn.disabled = !!status.running;
+  if (status.running) {
+    el.innerHTML = `"${status.phase}" 정렬 진행 중 — 이번 정렬 <b>${status.collected}</b> / ${status.target}건, 전체 누적 <b>${status.total}</b>건`;
+  } else if (status.error === "interrupted") {
+    el.textContent = `크롬이 확장프로그램을 잠시 재시작해 중단됐습니다 (누적 ${status.total}건까지 저장됨). 필요하면 다시 시작해주세요.`;
+  } else if (status.error === "cancelled") {
+    el.textContent = `중지됨: 누적 ${status.total}건까지 수집됨`;
+  } else if (status.error === "blocked") {
+    el.innerHTML = `<b class="blocked-warning">차단된 것으로 보여 멈췄습니다</b> (누적 ${status.total}건까지 저장됨).`;
+  } else if (status.error) {
+    el.textContent = `${status.error} (누적 ${status.total}건 수집됨)`;
+  } else {
+    el.textContent = `완료: 누적 ${status.total}건 수집됨`;
+  }
+}
+
 // extractCapturedItemKey (from shared.js) identifies a seller offer
 // by vendorItemId/itemId/productId, ignoring per-visit tracking
 // params, so this catches duplicates even if they were captured
@@ -581,6 +682,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   document.getElementById("sheetUrlInput").value = await getSheetWebAppUrl();
   renderSheetSyncStatus();
+  renderNaverReviewStatus();
 
   if (batchStatus && batchStatus.running) {
     // The stored state says a batch is running; ping the background
@@ -592,6 +694,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
     if (changes.batchStatus) renderBatchStatus(changes.batchStatus.newValue);
+    if (changes.naverReviewStatus) renderNaverReviewStatus();
     if (changes.records) {
       renderList(Array.isArray(changes.records.newValue) ? changes.records.newValue : []);
       renderSheetSyncStatus();
@@ -612,4 +715,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("batchStopBtn").addEventListener("click", handleBatchStop);
   document.getElementById("saveSheetUrlBtn").addEventListener("click", handleSaveSheetUrl);
   document.getElementById("syncNowBtn").addEventListener("click", handleSyncNow);
+  document.getElementById("naverReviewStartBtn").addEventListener("click", handleNaverReviewStart);
+  document.getElementById("naverReviewStopBtn").addEventListener("click", handleNaverReviewStop);
+  document.getElementById("naverReviewDownloadBtn").addEventListener("click", handleNaverReviewDownload);
 });

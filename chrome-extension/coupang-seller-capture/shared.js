@@ -419,6 +419,138 @@ function clickSellerDealsProductCard(index) {
   return { ok: true, totalCards: cards.length };
 }
 
+// --- 네이버 스마트스토어/브랜드스토어 리뷰 수집 --------------------
+// Written without being able to load a real naver.com page from this
+// environment (network policy blocks it) — everything below is a
+// best-effort first guess built from a screenshot, using the same
+// "match by visible text / structural shape, not exact class names"
+// philosophy as the Coupang functions above, since Naver's widget
+// classes are almost certainly hashed/rotating too. It will likely need
+// at least one round of correction against a live DevTools inspection
+// of an actual review card — see the README section on this feature.
+
+// Clicks the sort control to select one of Naver's review sort options
+// ("최신순", "평점 낮은순", etc.). Two shapes are handled: (1) the
+// option is already a visible, directly-clickable tab/button — click it
+// straight away; (2) it's hidden inside a closed dropdown whose trigger
+// currently shows a *different* sort label — click that trigger to open
+// the menu and report back "opened_menu" so the caller (background.js)
+// can wait a moment and call this again, at which point the wanted
+// option should be directly visible via case (1).
+function clickNaverSortOption(labelCandidates) {
+  const norm = (s) => (s || "").replace(/\s+/g, "");
+  const wanted = labelCandidates.map(norm);
+  const isSmallVisibleEl = (el) => (!el.children || el.children.length <= 2) && el.offsetParent !== null;
+
+  const candidates = Array.from(document.querySelectorAll("button, a, span, li, div, option"));
+  const target = candidates.find((el) => isSmallVisibleEl(el) && wanted.indexOf(norm(el.textContent)) !== -1);
+  if (target) {
+    target.click();
+    return { ok: true };
+  }
+
+  const allSortLabels = ["랭킹순", "최신순", "평점높은순", "평점낮은순", "평점 높은순", "평점 낮은순"].map(norm);
+  const trigger = candidates.find((el) => isSmallVisibleEl(el) && allSortLabels.indexOf(norm(el.textContent)) !== -1);
+  if (trigger) {
+    trigger.click();
+    return { ok: false, reason: "opened_menu" };
+  }
+
+  return { ok: false, reason: "sort_control_not_found" };
+}
+
+// Advances to the next page of the review list — tries an explicit
+// "다음"/"더보기" control first (more reliable across re-styles than a
+// numbered page link would be).
+function goToNextNaverReviewPage() {
+  const norm = (s) => (s || "").replace(/\s+/g, "");
+  const candidates = Array.from(document.querySelectorAll("button, a, span, div, li"));
+  const next = candidates.find((el) => {
+    if (el.children && el.children.length > 2) return false;
+    if (el.offsetParent === null) return false;
+    const t = norm(el.textContent);
+    return t === "다음" || t === "다음페이지" || t === "더보기" || t === "다음리뷰" || t === ">";
+  });
+  if (!next) return { ok: false, reason: "next_control_not_found" };
+  next.scrollIntoView({ block: "center" });
+  next.click();
+  return { ok: true, label: next.textContent.trim() };
+}
+
+// Reads every review card currently rendered on the page. A card is
+// found structurally rather than by class: it's the smallest ancestor
+// that contains BOTH a masked-reviewer-id-looking leaf text (e.g.
+// "ohhj****") AND a short "yy.mm.dd." date leaf text near it — that
+// specific pairing is a strong, re-style-resistant signal for "this is
+// one review", the same reasoning as findProductCardContainer() above
+// for Coupang's product cards. `rating` is left blank here — deliberately
+// not guessed, since it's very likely rendered as a CSS star-width bar
+// or an aria-label rather than plain visible text, and guessing wrong
+// would silently produce fake numbers. Fill it in once a live DevTools
+// inspection of one review card shows how it's actually marked up.
+function extractVisibleNaverReviews() {
+  const idPattern = /^[a-zA-Z0-9_.]{2,}\*{2,}$/;
+  const datePattern = /^\d{2}\.\d{2}\.\d{2}\.?$/;
+  const norm = (el) => (el && el.textContent ? el.textContent.trim() : "");
+
+  const allEls = Array.from(document.querySelectorAll("body *"));
+  const idEls = allEls.filter((el) => el.children.length === 0 && idPattern.test(norm(el)));
+
+  const seenCards = new Set();
+  const cards = [];
+
+  idEls.forEach((idEl) => {
+    let node = idEl;
+    let card = null;
+    for (let hop = 0; hop < 8 && node.parentElement; hop++) {
+      node = node.parentElement;
+      const hasDateChild = Array.from(node.querySelectorAll("*")).some(
+        (el) => el.children.length === 0 && datePattern.test(norm(el))
+      );
+      if (hasDateChild && norm(node).length > 30) {
+        card = node;
+        break;
+      }
+    }
+    if (!card || seenCards.has(card)) return;
+    seenCards.add(card);
+    cards.push({ card, idEl });
+  });
+
+  return cards.map((entry) => {
+    const card = entry.card;
+    const reviewerId = norm(entry.idEl);
+
+    const dateEl = Array.from(card.querySelectorAll("*")).find(
+      (el) => el.children.length === 0 && datePattern.test(norm(el))
+    );
+    const date = dateEl ? norm(dateEl) : "";
+
+    const isBest = /\bBEST\b/i.test(card.textContent);
+
+    const optionEl = Array.from(card.querySelectorAll("*")).find(
+      (el) => el.children.length === 0 && /(사이즈|색상|옵션)\s*[:：(]/.test(norm(el))
+    );
+    const option = optionEl ? norm(optionEl) : "";
+
+    const leafTexts = Array.from(card.querySelectorAll("*"))
+      .filter((el) => el.children.length === 0)
+      .map((el) => norm(el))
+      .filter((t) => t && t !== reviewerId && t !== date && t !== option);
+    const body = leafTexts.reduce((longest, t) => (t.length > longest.length ? t : longest), "");
+
+    return {
+      reviewerId,
+      date,
+      option,
+      body,
+      isBest,
+      photoCount: card.querySelectorAll("img").length,
+      rating: "",
+    };
+  });
+}
+
 // Runs on a Gmail compose tab (mail.google.com) that background.js just
 // opened via the compose URL scheme (view=cm&to=&su=&body=). Shows a
 // countdown banner and, when it reaches 0, clicks Gmail's own Send

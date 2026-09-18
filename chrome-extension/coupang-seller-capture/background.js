@@ -749,6 +749,181 @@ async function openSellerDealsProductTabsForKeyword(keyword, rocketOnly, perKeyw
   }
 }
 
+// --- 네이버 스토어 리뷰 수집 -----------------------------------------
+// Reuses the same isRunning/cancelRequested flags as the Coupang batch
+// flows above (only one automated run at a time, and "중지" works the
+// same way), and the same pacing philosophy (one page at a time, with a
+// jittered delay between page loads) rather than hammering the review
+// list quickly. The actual DOM-reading functions this calls
+// (clickNaverSortOption / goToNextNaverReviewPage / extractVisibleNaverReviews,
+// all in shared.js) are a first best-effort guess — see the README.
+
+const NAVER_REVIEW_PAGE_DELAY_MS = 3000;
+const NAVER_REVIEW_TARGET_PER_SORT = 500;
+const NAVER_SORT_MODES = [
+  { label: "최신순", matches: ["최신순"] },
+  { label: "평점 낮은순", matches: ["평점낮은순", "평점 낮은순"] },
+];
+
+async function getNaverReviewStatus() {
+  const { naverReviewStatus } = await chrome.storage.local.get("naverReviewStatus");
+  return (
+    naverReviewStatus || {
+      running: false,
+      phase: "",
+      collected: 0,
+      target: NAVER_REVIEW_TARGET_PER_SORT,
+      total: 0,
+      error: "",
+    }
+  );
+}
+
+async function setNaverReviewStatus(patch) {
+  const current = await getNaverReviewStatus();
+  await chrome.storage.local.set({ naverReviewStatus: { ...current, ...patch } });
+}
+
+// Reviews have no public numeric id to dedupe by, so this combines
+// reviewer id + date + the first 40 chars of the body — cheap and good
+// enough to avoid re-adding the same review if a page gets re-read.
+function naverReviewDedupeKey(review) {
+  return [review.reviewerId, review.date, (review.body || "").slice(0, 40)].join("|");
+}
+
+async function appendNaverReviews(newReviews) {
+  const { naverReviews } = await chrome.storage.local.get("naverReviews");
+  const list = Array.isArray(naverReviews) ? naverReviews : [];
+  const seen = new Set(list.map(naverReviewDedupeKey));
+  let added = 0;
+  newReviews.forEach((r) => {
+    const key = naverReviewDedupeKey(r);
+    if (seen.has(key)) return;
+    seen.add(key);
+    list.push(r);
+    added++;
+  });
+  await chrome.storage.local.set({ naverReviews: list });
+  return added;
+}
+
+// clickNaverSortOption's first call may only open a dropdown menu
+// ("opened_menu") instead of actually selecting the option, when the
+// wanted label isn't directly visible yet — retrying a couple more
+// times after a short wait covers that case (the option should be
+// directly clickable once the menu is open).
+async function setNaverSortWithRetry(tabId, matches) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let result;
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: clickNaverSortOption,
+        args: [matches],
+      });
+      result = results && results[0] && results[0].result;
+    } catch (err) {
+      return false;
+    }
+    if (result && result.ok) return true;
+    if (!result || result.reason !== "opened_menu") return false;
+    await delay(800);
+  }
+  return false;
+}
+
+// Collects up to NAVER_REVIEW_TARGET_PER_SORT reviews for each sort
+// mode in NAVER_SORT_MODES, on the given tab (must already be a Naver
+// product page with its review section visible/open). Clears any
+// previously collected reviews at the start of each run — this is
+// "give me a fresh 최신순 500 + 평점낮은순 500", not an accumulating log.
+async function startNaverReviewCollection(tabId) {
+  isRunning = true;
+  cancelRequested = false;
+  stopReason = "";
+
+  await chrome.storage.local.set({ naverReviews: [] });
+  await setNaverReviewStatus({
+    running: true,
+    phase: "",
+    collected: 0,
+    total: 0,
+    target: NAVER_REVIEW_TARGET_PER_SORT,
+    error: "",
+    startedAt: Date.now(),
+  });
+
+  let pageUrl = "";
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    pageUrl = tab.url || "";
+  } catch (err) {
+    // ignore; pageUrl stays blank
+  }
+
+  for (const sortMode of NAVER_SORT_MODES) {
+    if (cancelRequested) break;
+    await setNaverReviewStatus({ phase: sortMode.label, collected: 0 });
+
+    const sortOk = await setNaverSortWithRetry(tabId, sortMode.matches);
+    if (!sortOk) {
+      await setNaverReviewStatus({ error: `"${sortMode.label}" 정렬 버튼을 찾지 못해 건너뜀` });
+      continue;
+    }
+    await delayWithJitter(1500);
+    if (cancelRequested) break;
+
+    let collectedForSort = 0;
+    let pageCount = 0;
+    const MAX_PAGES = 60; // safety cap in case pagination never signals "no more"
+
+    while (collectedForSort < NAVER_REVIEW_TARGET_PER_SORT && pageCount < MAX_PAGES && !cancelRequested) {
+      let pageReviews = [];
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: extractVisibleNaverReviews,
+        });
+        pageReviews = (results && results[0] && results[0].result) || [];
+      } catch (err) {
+        break;
+      }
+
+      const tagged = pageReviews.map((r) => ({
+        ...r,
+        sortLabel: sortMode.label,
+        pageUrl,
+        capturedAt: formatDateTime(new Date()),
+      }));
+      const added = await appendNaverReviews(tagged);
+      collectedForSort += added;
+
+      const status = await getNaverReviewStatus();
+      await setNaverReviewStatus({ collected: collectedForSort, total: status.total + added });
+
+      if (collectedForSort >= NAVER_REVIEW_TARGET_PER_SORT || cancelRequested) break;
+
+      let hasNext = false;
+      try {
+        const nextResults = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: goToNextNaverReviewPage,
+        });
+        hasNext = !!(nextResults && nextResults[0] && nextResults[0].result && nextResults[0].result.ok);
+      } catch (err) {
+        hasNext = false;
+      }
+      if (!hasNext) break;
+
+      pageCount++;
+      await delayWithJitter(NAVER_REVIEW_PAGE_DELAY_MS);
+    }
+  }
+
+  isRunning = false;
+  await setNaverReviewStatus({ running: false, error: cancelRequested ? "cancelled" : "" });
+}
+
 // --- Paced Gmail auto-send (mail-composer.html) ----------------------
 // chrome.alarms (unlike the in-memory isRunning/cancelRequested flags
 // above) survives service worker restarts — Chrome wakes the worker to
@@ -958,6 +1133,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ ok: true, isRunning });
     return false;
   }
+  if (message && message.type === "START_NAVER_REVIEW_COLLECTION" && message.tabId) {
+    if (isRunning) {
+      sendResponse({ ok: false, reason: "already_running" });
+      return false;
+    }
+    startNaverReviewCollection(message.tabId);
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (message && message.type === "GET_NAVER_REVIEW_STATUS") {
+    getNaverReviewStatus().then(sendResponse);
+    return true;
+  }
   if (message && message.type === "START_MAIL_AUTOSEND" && Array.isArray(message.queue)) {
     startMailAutosend(message.queue, message.countdownSeconds, message.perHour, message.sheetUrl, message.dailyLimit).then(
       sendResponse
@@ -1022,5 +1210,9 @@ chrome.commands.onCommand.addListener(async (command) => {
   const status = await getBatchStatus();
   if (status.running && !isRunning) {
     await setBatchStatus({ running: false, error: "interrupted" });
+  }
+  const naverStatus = await getNaverReviewStatus();
+  if (naverStatus.running && !isRunning) {
+    await setNaverReviewStatus({ running: false, error: "interrupted" });
   }
 })();
