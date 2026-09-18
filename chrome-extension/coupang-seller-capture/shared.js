@@ -1,0 +1,695 @@
+// Functions in this file are injected into Coupang pages via
+// chrome.scripting.executeScript({ func: ... }). Each must stay
+// self-contained (no references to outer closures) because the
+// browser re-serializes the function body and runs it inside the
+// target page's own context.
+//
+// extractCapturedItemKey() below is the one exception — it's a plain
+// string helper (not page-injected) shared between popup.js and
+// background.js via a normal <script>/importScripts include, used to
+// tell whether two captured records are the same seller offer.
+
+// Coupang product URLs carry several ids: the productId in the path
+// is a listing *group* — the same productId can be sold by several
+// different sellers, each with their own vendorItemId — while
+// clickEventId/searchId/traceId etc. are just per-visit tracking noise
+// that differs every time even for the exact same offer. So dedupe by
+// vendorItemId (the most specific real identifier) when present,
+// falling back to itemId, then productId, then the raw URL.
+function extractCapturedItemKey(url) {
+  try {
+    const u = new URL(url);
+    const vendorItemId = u.searchParams.get("vendorItemId");
+    if (vendorItemId) return `v:${vendorItemId}`;
+    const itemId = u.searchParams.get("itemId");
+    if (itemId) return `i:${itemId}`;
+    const m = u.pathname.match(/\/vp\/products\/(\d+)/);
+    if (m) return `p:${m[1]}`;
+    return url || "";
+  } catch (err) {
+    const m = (url || "").match(/\/vp\/products\/(\d+)/);
+    return m ? `p:${m[1]}` : url || "";
+  }
+}
+
+// --- Google Sheets sync helpers -------------------------------------
+// Extension-context only (chrome.storage / fetch aren't available
+// inside an injected page script) — never pass these to
+// chrome.scripting.executeScript. Used from both popup.js and
+// background.js, which is why they live here instead of being
+// duplicated in each.
+
+async function getSheetWebAppUrl() {
+  const { sheetWebAppUrl } = await chrome.storage.local.get("sheetWebAppUrl");
+  return sheetWebAppUrl || "";
+}
+
+// Sends records to the Apps Script web app in chunks (its execution
+// time/payload limits make one huge POST risky). Uses
+// "text/plain" as the content type on purpose: a JSON content type
+// triggers a CORS preflight (OPTIONS) request that Apps Script web
+// apps don't handle, which would make every sync silently fail.
+async function postRecordsToSheet(records) {
+  const url = await getSheetWebAppUrl();
+  if (!url) return { ok: false, reason: "no_url" };
+  if (!records || records.length === 0) return { ok: true, added: 0 };
+
+  const CHUNK_SIZE = 100;
+  let added = 0;
+  let duplicates = 0;
+  for (let i = 0; i < records.length; i += CHUNK_SIZE) {
+    const chunk = records.slice(i, i + CHUNK_SIZE);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ records: chunk }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!data || !data.ok) return { ok: false, reason: "response_not_ok", added, duplicates };
+      added += data.added != null ? data.added : chunk.length;
+      duplicates += data.duplicates || 0;
+    } catch (err) {
+      return { ok: false, reason: "network_error", added, duplicates };
+    }
+  }
+  return { ok: true, added, duplicates };
+}
+
+// Fetches every row from `url` (a Code.gs deployment's web app URL,
+// via its doGet?action=list) as an array of objects keyed by column
+// header — the same shape XLSX.utils.sheet_to_json gives when parsing
+// an uploaded file, so callers can feed either source through the
+// same column-detection logic. Takes the URL explicitly (rather than
+// looking up getSheetWebAppUrl() itself) so callers can point this at
+// any deployment — e.g. the mail composer's own, independent sheet —
+// not just the one configured for the Coupang-capture sync.
+async function fetchSheetRows(url) {
+  if (!url) return { ok: false, reason: "no_url" };
+  try {
+    const sep = url.includes("?") ? "&" : "?";
+    const res = await fetch(`${url}${sep}action=list`);
+    const data = await res.json().catch(() => null);
+    if (!data || !data.ok) return { ok: false, reason: "response_not_ok" };
+    return { ok: true, rows: data.rows || [] };
+  } catch (err) {
+    return { ok: false, reason: "network_error" };
+  }
+}
+
+// Tells the Code.gs deployment at `url` to mark one row as handled
+// (red/bold text) by its "상품키(중복확인용)" key — called right
+// after a row is handed off to a Gmail compose tab, whether via the
+// manual per-row button or the paced auto-send queue. Best-effort: a
+// failure here doesn't block or undo the compose/send itself.
+async function markSheetRowSent(url, itemKey) {
+  if (!url) return { ok: false, reason: "no_url" };
+  if (!itemKey) return { ok: false, reason: "no_key" };
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action: "markSent", itemKey }),
+    });
+    const data = await res.json().catch(() => null);
+    return data && data.ok ? { ok: true } : { ok: false, reason: "response_not_ok" };
+  } catch (err) {
+    return { ok: false, reason: "network_error" };
+  }
+}
+
+// Runs on any Coupang page. Detects known access-blocked pages —
+// Coupang's own "사용권한이 없습니다" page, and the Akamai
+// (errors.edgesuite.net) "Access Denied" edge block that can trigger
+// before the request even reaches Coupang's app servers — so the
+// caller can stop instead of plowing through the rest of the batch
+// against a wall.
+function isCoupangBlockedPage() {
+  const norm = (s) => (s || "").replace(/\s+/g, "").toLowerCase();
+  const text = document.body ? document.body.innerText || document.body.textContent || "" : "";
+  const normalized = norm(text);
+  if (normalized.includes(norm("사용권한이 없습니다"))) return true;
+  if (normalized.includes(norm("Access Denied")) && normalized.includes(norm("don't have permission to access"))) return true;
+  return false;
+}
+
+// Runs on a product detail page.
+function extractCoupangSellerInfo() {
+  const norm = (s) => s.replace(/\s+/g, "");
+
+  const labelMap = [
+    { key: "sellerName", labels: ["상호/대표자", "상호 / 대표자", "상호명/대표자", "상호"] },
+    { key: "address", labels: ["사업장 소재지", "소재지"] },
+    { key: "email", labels: ["e-mail", "E-mail", "이메일"] },
+    { key: "phone", labels: ["연락처"] },
+    { key: "mailOrderNo", labels: ["통신판매업 신고번호", "통신판매업신고번호"] },
+    { key: "bizRegNo", labels: ["사업자번호", "사업자등록번호"] },
+    { key: "safetyService", labels: ["구매안전서비스"] },
+  ];
+
+  const bodyText = document.body ? document.body.innerText || document.body.textContent || "" : "";
+  const lines = bodyText
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+
+  let startIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (norm(lines[i]) === "판매자정보") startIdx = i;
+  }
+  if (startIdx === -1) return { success: false, reason: "not_found" };
+
+  const windowLines = lines.slice(startIdx, startIdx + 60);
+  const isAnyLabel = (line) =>
+    labelMap.some((e) => e.labels.some((l) => norm(line) === norm(l)));
+
+  const result = {};
+  for (let i = 0; i < windowLines.length; i++) {
+    const line = windowLines[i];
+    for (const entry of labelMap) {
+      if (result[entry.key]) continue;
+      if (entry.labels.some((l) => norm(line) === norm(l))) {
+        for (let j = i + 1; j < windowLines.length; j++) {
+          const candidate = windowLines[j];
+          if (candidate.length > 0 && !isAnyLabel(candidate)) {
+            result[entry.key] = candidate;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  if (Object.keys(result).length === 0) return { success: false, reason: "no_fields" };
+
+  return {
+    success: true,
+    data: {
+      sellerName: result.sellerName || "",
+      address: result.address || "",
+      email: result.email || "",
+      phone: result.phone || "",
+      mailOrderNo: result.mailOrderNo || "",
+      bizRegNo: result.bizRegNo || "",
+      safetyService: result.safetyService || "",
+      productTitle: document.title || "",
+      pageUrl: location.href,
+    },
+  };
+}
+
+// Runs on a product detail page. The seller info block only renders
+// after the "배송/교환/반품 안내" tab is opened, so click it first.
+function clickShippingTabIfPresent() {
+  const norm = (s) => (s || "").replace(/\s+/g, "");
+  const els = Array.from(document.querySelectorAll("a, button, li, div, span"));
+  const target = els.find((el) => {
+    if (el.children && el.children.length > 2) return false;
+    const t = norm(el.textContent);
+    if (t === "배송/교환/반품안내") return true;
+    return t.length < 20 && t.includes("배송") && t.includes("교환") && t.includes("반품") && t.includes("안내");
+  });
+  if (target) {
+    target.click();
+    return true;
+  }
+  return false;
+}
+
+// Runs on a Coupang search/category listing page. Clicks the site's
+// own "판매자로켓" filter chip/checkbox if one is visible, so the
+// search results are filtered by Coupang's own (authoritative) logic
+// instead of relying only on scanning rendered badge text — a badge
+// shown as an icon with no text would be invisible to that scan.
+// Returns whether a filter control was found and clicked.
+function clickRocketFilterIfPresent() {
+  const norm = (s) => (s || "").replace(/\s+/g, "");
+  const candidates = Array.from(document.querySelectorAll("label, button, a, li, div, span"));
+  const target = candidates.find((el) => {
+    if (el.children && el.children.length > 3) return false;
+    return norm(el.textContent) === "판매자로켓";
+  });
+  if (!target) return false;
+
+  const input = target.querySelector && target.querySelector('input[type="checkbox"], input[type="radio"]');
+  if (input) {
+    input.click();
+  } else {
+    target.click();
+  }
+  return true;
+}
+
+// Walks up from a product anchor to the largest ancestor that still
+// belongs to just that one product card — stops as soon as a parent
+// would span more than one product anchor (i.e. the shared list
+// container). Coupang's card markup uses hashed/rotating class names
+// so this counts sibling product links instead of matching a class.
+function findProductCardContainer(anchor) {
+  let current = anchor;
+  while (current.parentElement && current.parentElement !== document.body) {
+    const parent = current.parentElement;
+    if (parent.querySelectorAll('a[href*="/vp/products/"]').length > 1) break;
+    current = parent;
+  }
+  return current;
+}
+
+// Runs on a Coupang search/category listing page. Pass rocketOnly:
+// true to keep only cards showing a "로켓" delivery badge
+// (판매자로켓/로켓배송/로켓프레시/로켓직구 all contain "로켓").
+function findProductLinksOnListingPage(rocketOnly) {
+  const anchors = Array.from(document.querySelectorAll('a[href*="/vp/products/"]'));
+  const seen = new Set();
+  const links = [];
+  for (const a of anchors) {
+    const href = a.href;
+    const m = href.match(/\/vp\/products\/(\d+)/);
+    if (!m) continue;
+    const id = m[1];
+    if (seen.has(id)) continue;
+
+    if (rocketOnly) {
+      const container = findProductCardContainer(a);
+      const text = container ? container.textContent || "" : "";
+      if (!text.includes("로켓")) continue;
+    }
+
+    seen.add(id);
+    links.push(href);
+  }
+  return links;
+}
+
+// Runs on the "쿠팡 판매자특가" hub page (coupang.com/np/omp). Unlike
+// np/search, that page keeps one fixed URL and filters in place via its
+// own in-page search box — no ?q= URL to just open per keyword — so
+// this finds that box and types into it the way a real user would,
+// rather than navigating anywhere.
+//
+// Confirmed via a live DevTools inspection (2026-09) that the box looks
+// like:
+//   <div class="styles_search_box__W4CM9">
+//     <div class="styles_search_input_box__RM7NQ">
+//       <span class="styles_search_icon__OLPGM"></span>
+//       <input type="text" class="styles_keyword_box__pF3iJ" value="...">
+//       <span class="styles_clear_keyword__pgvjN"></span>
+//     </div>
+//     <span class="...styles_search_cancel_btn__fm4G">취소</span>
+//   </div>
+// Coupang's CSS-module class names carry a build-specific hash suffix
+// (the "__pF3iJ" etc.) that rotates on redeploy, so this matches on the
+// stable human-readable prefix ("keyword_box") via a substring selector
+// rather than the exact class — same reasoning as
+// findProductCardContainer() above not trusting Coupang's card class
+// names either. The "취소" text match is kept as a second-line fallback
+// in case the prefix itself changes.
+//
+// Deliberately does NOT try to click any nearby button to submit —
+// "styles_clear_keyword__pgvjN" sits right next to the input and exists
+// specifically to blank it out, so a generic "click the nearest button"
+// fallback risks erasing the keyword we just typed instead of searching
+// it. Setting the value (which the result grid visibly reacts to when a
+// person types) plus a synthetic Enter is the safer combination.
+//
+// Best-effort: if Coupang changes this markup and the box can't be
+// found, returns { ok: false, reason: "input_not_found" } so the caller
+// can skip the keyword instead of scraping an unfiltered/wrong result set.
+async function searchSellerDealsPage(keyword) {
+  const norm = (s) => (s || "").replace(/\s+/g, "");
+
+  function isVisible(el) {
+    return !!el && el.offsetParent !== null;
+  }
+
+  function findSearchInput() {
+    // Primary: match on the stable part of the actual class name seen
+    // via DevTools ("styles_keyword_box__<hash>").
+    const byClass = Array.from(document.querySelectorAll('input[class*="keyword_box"]')).find(isVisible);
+    if (byClass) return byClass;
+
+    // Fallback 1: an input whose nearby container also has a "취소"
+    // control — that pairing is specific to this page's search widget.
+    const cancelEls = Array.from(document.querySelectorAll("button, a, span, div")).filter(
+      (el) => norm(el.textContent) === "취소" && (!el.children || el.children.length === 0) && isVisible(el)
+    );
+    for (const cancelEl of cancelEls) {
+      let container = cancelEl.parentElement;
+      for (let hop = 0; hop < 4 && container; hop++) {
+        const input = container.querySelector('input[type="text"], input[type="search"], input:not([type])');
+        if (input && !input.closest("header") && isVisible(input)) return input;
+        container = container.parentElement;
+      }
+    }
+
+    // Fallback 2: first visible non-header text input on the page —
+    // excludes the site's global header search bar.
+    const inputs = Array.from(document.querySelectorAll('input[type="text"], input[type="search"], input:not([type])'));
+    return inputs.find((el) => !el.closest("header") && isVisible(el)) || null;
+  }
+
+  const input = findSearchInput();
+  if (!input) return { ok: false, reason: "input_not_found" };
+
+  // Confirmed via a live DevTools inspection (2026-09) that this page's
+  // product cards carry NO <a href> anywhere — no anchor on the image,
+  // the title, or any wrapper (see clickSellerDealsProductCard() below,
+  // which is what actually navigates them). So "did the search change
+  // anything" is measured by counting cards with the stable
+  // "styles_promotion_item__" class-name prefix instead of counting
+  // links. Duplicated inline (rather than calling a shared helper)
+  // because each page-injected function in this file has to stay
+  // self-contained — see the file-level comment at the top.
+  const countCards = () =>
+    Array.from(document.querySelectorAll("div")).filter((el) =>
+      Array.from(el.classList).some((c) => c.startsWith("styles_promotion_item__"))
+    ).length;
+  const beforeCount = countCards();
+
+  // A plain `input.value = keyword` doesn't register with a
+  // React-controlled field (React overrides the native setter to track
+  // changes), so go through the native prototype setter first, then
+  // dispatch the events React listens for.
+  const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+  input.focus();
+  nativeSetter.call(input, keyword);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+
+  ["keydown", "keypress", "keyup"].forEach((type) => {
+    input.dispatchEvent(new KeyboardEvent(type, { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+  });
+
+  // Poll for the result grid to actually change instead of a fixed
+  // delay, since we don't know this page's real render timing.
+  const start = Date.now();
+  while (Date.now() - start < 4000) {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (countCards() !== beforeCount) break;
+  }
+
+  return { ok: true };
+}
+
+// Clicks the Nth (0-based) product card on a rendered "판매자특가"
+// (np/omp) search-results page. These cards have no href to read at
+// all (confirmed via DevTools — no anchor on the image, title, or any
+// wrapper), so findProductLinksOnListingPage()'s href-scanning approach
+// (which works fine on normal np/search results) finds nothing here.
+// Clicking is the only way to navigate — and a real hand-click was
+// confirmed (by the user, live) to open the product in a brand-new tab,
+// so this is the seller-deals equivalent of just opening a product's
+// URL. Called once per product with the caller (background.js) pacing
+// the delay between calls — same shape as every other "one page at a
+// time" flow in this extension — rather than looping internally here,
+// so progress can be reported and cancellation checked after each one.
+// Cards are found by the stable "styles_promotion_item__" class-name
+// prefix (the trailing hash rotates per Coupang deploy, matched with
+// startsWith on each class token rather than a raw substring match,
+// since a raw substring would also match the plural wrapper class
+// "promo-omp-promotion_items_contain").
+function clickSellerDealsProductCard(index) {
+  const cards = Array.from(document.querySelectorAll("div")).filter((el) =>
+    Array.from(el.classList).some((c) => c.startsWith("styles_promotion_item__"))
+  );
+  const card = cards[index];
+  if (!card) return { ok: false, reason: "card_not_found", totalCards: cards.length };
+  card.scrollIntoView({ block: "center" });
+  card.click();
+  return { ok: true, totalCards: cards.length };
+}
+
+// --- 네이버 스마트스토어/브랜드스토어 리뷰 수집 --------------------
+// Rewritten against real markup the user pasted from a live DevTools
+// inspection (2026-09) — first the sort-filter button, then a full
+// review card's outerHTML. Naver's own CSS-module class names here
+// (e.g. "PYRRKjHPB6") are fully opaque hashes with no stable semantic
+// prefix to match on (unlike Coupang's "styles_xxx__hash" pattern
+// elsewhere in this file), so these functions lean on the site's own
+// `data-shp-*` analytics attributes and `id="review_content_<id>"`-style
+// ids instead — those read as deliberately-named, not auto-generated,
+// so they should be far more durable across re-styles.
+
+// Naver's review sort control turned out to be a `role="radio"` button
+// group where every option is simultaneously present and directly
+// clickable (no dropdown to open first) — each button carries
+// `data-shp-contents-type="리뷰정렬필터"` and
+// `data-shp-contents-id="<정확한 정렬명>"` (e.g. "최신순"). Matching on
+// that attribute sidesteps a plain-text match, which broke on the
+// hidden screen-reader-only "정렬하기" suffix span Naver appends after
+// the visible label. Falls back to a visible-text match (using only the
+// button's own direct text node, not its descendants) for any Naver
+// store template built differently.
+function clickNaverSortOption(labelCandidates) {
+  for (const label of labelCandidates) {
+    const btn = document.querySelector(`[data-shp-contents-type="리뷰정렬필터"][data-shp-contents-id="${label}"]`);
+    if (btn) {
+      if (btn.getAttribute("aria-checked") === "true") return { ok: true, already: true };
+      btn.click();
+      return { ok: true };
+    }
+  }
+
+  const norm = (s) => (s || "").replace(/\s+/g, "");
+  const wanted = labelCandidates.map(norm);
+  const ownText = (el) =>
+    Array.from(el.childNodes)
+      .filter((n) => n.nodeType === Node.TEXT_NODE)
+      .map((n) => n.textContent)
+      .join("");
+  const candidates = Array.from(document.querySelectorAll('[role="radio"], button, a, span, li'));
+  const target = candidates.find((el) => el.offsetParent !== null && wanted.indexOf(norm(ownText(el))) !== -1);
+  if (target) {
+    target.click();
+    return { ok: true };
+  }
+
+  return { ok: false, reason: "sort_control_not_found" };
+}
+
+// Loads more reviews. Confirmed (by the user, live) that this review
+// list uses infinite scroll rather than a "다음"/"더보기" button. The
+// first version of this only scrolled the last card into view plus a
+// small 400px nudge, once — that stopped producing new reviews after a
+// handful of loads (collected only 85 of the requested 1000), so this
+// scrolls repeatedly and more aggressively instead of a single jump:
+// each step scrolls all the way to the page's current bottom and fires
+// real "scroll" events (some lazy-load implementations listen for the
+// event itself rather than relying only on IntersectionObserver), and
+// keeps doing that — not just once — until either new review cards
+// actually appear or the page visibly stops growing after several
+// tries in a row (a real signal that there's nothing further to load,
+// vs. giving up after a single attempt). Cards are counted via the same
+// `[data-shp-contents-type="review"][data-shp-contents-id]` selector
+// extractVisibleNaverReviews() uses, so "more cards rendered" is
+// measured the same way both places.
+async function loadMoreNaverReviews() {
+  const getCards = () => document.querySelectorAll('[data-shp-contents-type="review"][data-shp-contents-id]');
+  const scrollHeight = () => Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+  const before = getCards().length;
+  if (before === 0) return { ok: false, reason: "no_cards_yet", before: 0, after: 0 };
+
+  let lastHeight = 0;
+  let stableHeightCount = 0;
+  for (let i = 0; i < 20; i++) {
+    const cardsNow = getCards();
+    if (cardsNow.length > 0) {
+      cardsNow[cardsNow.length - 1].scrollIntoView({ block: "end" });
+    }
+    window.scrollTo(0, scrollHeight());
+    window.dispatchEvent(new Event("scroll"));
+    document.dispatchEvent(new Event("scroll"));
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    if (getCards().length > before) break;
+
+    const nowHeight = scrollHeight();
+    stableHeightCount = nowHeight === lastHeight ? stableHeightCount + 1 : 0;
+    lastHeight = nowHeight;
+    if (stableHeightCount >= 4) break; // page genuinely stopped growing after repeated tries
+  }
+
+  // Give one last in-flight fetch a bit more time to resolve.
+  const start = Date.now();
+  while (Date.now() - start < 4000 && getCards().length === before) {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+
+  const after = getCards().length;
+  return { ok: after > before, before, after };
+}
+
+// Reads every review card currently rendered. Each review's content
+// block is uniquely identified by `data-shp-contents-type="review"` +
+// `data-shp-contents-id="<numeric review id>"` — its parent element is
+// the full card (rating/reviewer/date sit in a sibling block just
+// above it). `reviewId` is that numeric id, used as the primary dedupe
+// key in background.js instead of the old reviewerId+date+body-snippet
+// guess. `isBest` is deliberately left false always: the only "BEST"
+// text seen so far turned out to be part of a purchased option's own
+// name ("[★BEST] 퀸(Q) + 방수커버"), not a review-quality badge — a
+// generic text match on "BEST" would have produced a false positive
+// here, so this doesn't attempt it without seeing the real badge markup.
+function extractVisibleNaverReviews() {
+  const idPattern = /^[a-zA-Z0-9_.]{2,}\*{2,}$/;
+  const datePattern = /^\d{2}\.\d{2}\.\d{2}\.?$/;
+  const ratingPattern = /^[1-5]$/;
+  const norm = (el) => (el && el.textContent ? el.textContent.trim() : "");
+  const ownText = (el) =>
+    Array.from(el.childNodes)
+      .filter((n) => n.nodeType === Node.TEXT_NODE)
+      .map((n) => n.textContent)
+      .join("")
+      .trim();
+
+  const contentEls = Array.from(document.querySelectorAll('[data-shp-contents-type="review"][data-shp-contents-id]'));
+
+  return contentEls.map((contentEl) => {
+    const reviewId = contentEl.getAttribute("data-shp-contents-id") || "";
+    const card = contentEl.parentElement || contentEl;
+
+    const idEl = Array.from(card.querySelectorAll("span, div")).find(
+      (el) => el.children.length === 0 && idPattern.test(norm(el))
+    );
+    const reviewerId = idEl ? norm(idEl) : "";
+
+    const dateEl = Array.from(card.querySelectorAll("span, div")).find(
+      (el) => el.children.length === 0 && datePattern.test(norm(el))
+    );
+    const date = dateEl ? norm(dateEl) : "";
+
+    const ratingEl = Array.from(card.querySelectorAll("div, span")).find(
+      (el) => ratingPattern.test(ownText(el)) && Array.from(el.children).some((c) => c.tagName === "SVG")
+    );
+    const rating = ratingEl ? ownText(ratingEl) : "";
+
+    const bodyEl = card.querySelector('[id^="review_content_"]');
+    const body = bodyEl ? norm(bodyEl) : "";
+
+    const optionEl = card.querySelector('[id^="review_option_"]');
+    const option = optionEl ? norm(optionEl) : "";
+
+    return {
+      reviewId,
+      reviewerId,
+      date,
+      rating,
+      option,
+      body,
+      isBest: false,
+      photoCount: card.querySelectorAll('a[data-shp-area-id="reviewattach"]').length,
+    };
+  });
+}
+
+// Runs on a Gmail compose tab (mail.google.com) that background.js just
+// opened via the compose URL scheme (view=cm&to=&su=&body=). Shows a
+// countdown banner and, when it reaches 0, clicks Gmail's own Send
+// button — so whatever the user edited in the compose box during the
+// countdown is exactly what goes out, since this operates the real
+// compose UI rather than submitting separately-held content. A visible
+// "지금 취소" always beats the timer; the send is never silent.
+function startGmailAutoSendCountdown(countdownSeconds) {
+  function findSendButton() {
+    const candidates = Array.from(document.querySelectorAll('div[role="button"], [role="button"]'));
+    return candidates.find((el) => {
+      const label = (el.getAttribute("aria-label") || "").trim();
+      return label.includes("보내기") || /^send\b/i.test(label);
+    });
+  }
+
+  function makeBanner() {
+    const banner = document.createElement("div");
+    banner.id = "__coupang_ext_autosend_banner";
+    banner.style.cssText =
+      "position:fixed;top:0;left:0;right:0;z-index:2147483647;" +
+      "background:#111827;color:#fff;padding:10px 16px;" +
+      "font-family:-apple-system,sans-serif;font-size:14px;" +
+      "display:flex;align-items:center;gap:12px;box-shadow:0 2px 8px rgba(0,0,0,.3);";
+
+    const text = document.createElement("span");
+    text.id = "__coupang_ext_autosend_text";
+    banner.appendChild(text);
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.textContent = "지금 취소";
+    cancelBtn.style.cssText = "padding:5px 10px;border:none;border-radius:5px;background:#dc2626;color:#fff;cursor:pointer;font-size:13px;";
+    banner.appendChild(cancelBtn);
+
+    const nowBtn = document.createElement("button");
+    nowBtn.textContent = "지금 바로 전송";
+    nowBtn.style.cssText = "padding:5px 10px;border:none;border-radius:5px;background:#16a34a;color:#fff;cursor:pointer;font-size:13px;";
+    banner.appendChild(nowBtn);
+
+    document.body.appendChild(banner);
+    return { banner, text, cancelBtn, nowBtn };
+  }
+
+  let cancelled = false;
+  let pollAttempts = 0;
+
+  const waitForCompose = setInterval(() => {
+    pollAttempts++;
+    const sendBtn = findSendButton();
+    if (sendBtn) {
+      clearInterval(waitForCompose);
+      runCountdown();
+      return;
+    }
+    if (pollAttempts > 20) {
+      clearInterval(waitForCompose);
+      const { text, cancelBtn, nowBtn } = makeBanner();
+      text.textContent = "작성창을 찾지 못했습니다. 직접 '보내기'를 눌러주세요.";
+      cancelBtn.style.display = "none";
+      nowBtn.style.display = "none";
+    }
+  }, 500);
+
+  function runCountdown() {
+    const { banner, text, cancelBtn, nowBtn } = makeBanner();
+    let remaining = countdownSeconds;
+
+    const render = () => {
+      text.textContent = `이 메일은 ${remaining}초 후 자동으로 전송됩니다. 지금 작성창에서 내용을 수정하셔도 됩니다.`;
+    };
+    render();
+
+    const tick = setInterval(() => {
+      remaining--;
+      if (remaining <= 0) {
+        clearInterval(tick);
+        doSend();
+        return;
+      }
+      render();
+    }, 1000);
+
+    cancelBtn.addEventListener("click", () => {
+      cancelled = true;
+      clearInterval(tick);
+      banner.remove();
+    });
+
+    nowBtn.addEventListener("click", () => {
+      clearInterval(tick);
+      doSend();
+    });
+
+    function doSend() {
+      if (cancelled) return;
+      const btn = findSendButton();
+      if (btn) {
+        btn.click();
+        text.textContent = "전송했습니다.";
+        cancelBtn.style.display = "none";
+        nowBtn.style.display = "none";
+        setTimeout(() => banner.remove(), 3000);
+      } else {
+        text.textContent = "전송 버튼을 찾지 못했습니다. 직접 '보내기'를 눌러주세요.";
+        cancelBtn.style.display = "none";
+        nowBtn.style.display = "none";
+      }
+    }
+  }
+}

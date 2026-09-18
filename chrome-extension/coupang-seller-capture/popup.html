@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>쿠팡 판매자정보 캡처</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    width: 360px;
+    margin: 0;
+    padding: 14px;
+    font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+    font-size: 13px;
+    color: #222;
+  }
+  h1 {
+    font-size: 15px;
+    margin: 0 0 10px;
+  }
+  button {
+    width: 100%;
+    padding: 9px 10px;
+    margin-bottom: 8px;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  #captureBtn {
+    background: #2563eb;
+    color: #fff;
+    font-weight: 600;
+  }
+  #captureBtn:hover { background: #1d4ed8; }
+  #captureOpenTabsBtn {
+    background: #0d9488;
+    color: #fff;
+    font-weight: 600;
+  }
+  #captureOpenTabsBtn:hover { background: #0f766e; }
+  #captureOpenTabsBtn:disabled { background: #99d4cd; cursor: not-allowed; }
+  #openMailComposerBtn {
+    background: #7c3aed;
+    color: #fff;
+    font-weight: 600;
+  }
+  #openMailComposerBtn:hover { background: #6d28d9; }
+  .row-buttons {
+    display: flex;
+    gap: 8px;
+  }
+  .row-buttons button {
+    flex: 1;
+  }
+  #downloadBtn {
+    background: #16a34a;
+    color: #fff;
+  }
+  #downloadBtn:hover { background: #15803d; }
+  #clearBtn {
+    background: #f3f4f6;
+    color: #b91c1c;
+    border: 1px solid #e5e7eb;
+  }
+  #clearBtn:hover { background: #fee2e2; }
+  #dedupeBtn {
+    background: #f3f4f6;
+    color: #374151;
+    border: 1px solid #e5e7eb;
+  }
+  #dedupeBtn:hover { background: #e5e7eb; }
+  #sheetUrlInput {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    font-size: 12px;
+    margin-bottom: 6px;
+    box-sizing: border-box;
+  }
+  #saveSheetUrlBtn, #syncNowBtn {
+    background: #f3f4f6;
+    color: #374151;
+    border: 1px solid #e5e7eb;
+  }
+  #saveSheetUrlBtn:hover, #syncNowBtn:hover { background: #e5e7eb; }
+  #status {
+    min-height: 18px;
+    margin: 4px 0 10px;
+    font-size: 12px;
+    color: #6b7280;
+  }
+  #status.error { color: #dc2626; }
+  #status.ok { color: #16a34a; }
+  .count {
+    font-size: 12px;
+    color: #374151;
+    margin-bottom: 6px;
+  }
+  .count b { color: #111827; }
+  #list {
+    max-height: 260px;
+    overflow-y: auto;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+  }
+  .item {
+    padding: 8px 10px;
+    border-bottom: 1px solid #f0f0f0;
+    position: relative;
+  }
+  .item:last-child { border-bottom: none; }
+  .item .seller {
+    font-weight: 600;
+    margin-bottom: 2px;
+  }
+  .item .meta {
+    color: #6b7280;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .item .del {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    width: auto;
+    padding: 2px 6px;
+    margin: 0;
+    background: transparent;
+    color: #9ca3af;
+    font-size: 12px;
+  }
+  .item .del:hover { color: #dc2626; }
+  .empty {
+    padding: 16px 10px;
+    text-align: center;
+    color: #9ca3af;
+  }
+  hr {
+    border: none;
+    border-top: 1px solid #e5e7eb;
+    margin: 12px 0;
+  }
+  .section-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #374151;
+    margin-bottom: 6px;
+  }
+  .section-desc {
+    font-size: 11px;
+    color: #9ca3af;
+    margin-bottom: 8px;
+  }
+  #batchStartBtn {
+    background: #7c3aed;
+    color: #fff;
+  }
+  #batchStartBtn:hover { background: #6d28d9; }
+  #batchStartBtn:disabled { background: #c4b5fd; cursor: not-allowed; }
+  #batchStopBtn {
+    background: #f3f4f6;
+    color: #374151;
+    border: 1px solid #e5e7eb;
+  }
+  #batchProgress {
+    font-size: 12px;
+    color: #4b5563;
+    margin: 4px 0 8px;
+    min-height: 16px;
+  }
+  #batchProgress b { color: #111827; }
+  .blocked-warning { color: #b91c1c; }
+  .progress-bar {
+    height: 6px;
+    background: #ede9fe;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 8px;
+    display: none;
+  }
+  .progress-bar.active { display: block; }
+  .progress-bar-fill {
+    height: 100%;
+    background: #7c3aed;
+    width: 0%;
+    transition: width 0.2s ease;
+  }
+  #keywordsInput {
+    width: 100%;
+    height: 70px;
+    resize: vertical;
+    font-family: inherit;
+    font-size: 12px;
+    padding: 6px 8px;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    margin-bottom: 6px;
+    box-sizing: border-box;
+  }
+  .keyword-count-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+    font-size: 12px;
+    color: #4b5563;
+  }
+  #perKeywordCount, #productDelaySeconds {
+    width: 56px;
+    padding: 4px 6px;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+  #keywordStartBtn {
+    background: #7c3aed;
+    color: #fff;
+  }
+  #keywordStartBtn:hover { background: #6d28d9; }
+  #keywordStartBtn:disabled { background: #c4b5fd; cursor: not-allowed; }
+  .open-tabs-btn {
+    background: #059669;
+    color: #fff;
+  }
+  .open-tabs-btn:hover { background: #047857; }
+  .open-tabs-btn:disabled { background: #a7f3d0; cursor: not-allowed; }
+  .rocket-filter-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    font-size: 11.5px;
+    color: #4b5563;
+    margin-bottom: 4px;
+    cursor: pointer;
+  }
+  .rocket-filter-row input { margin-top: 2px; flex-shrink: 0; }
+  .source-row {
+    display: flex;
+    gap: 12px;
+    font-size: 11.5px;
+    color: #4b5563;
+    margin-bottom: 8px;
+  }
+  .source-row label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+</style>
+</head>
+<body>
+  <h1>쿠팡 판매자정보 캡처</h1>
+  <button id="captureBtn">이 페이지에서 판매자정보 캡처</button>
+  <div class="section-desc" style="margin-top:-4px;">직접 상품페이지를 넘겨보며 쓴다면, 팝업을 열지 않고 단축키(<b>Alt+Shift+K</b>)로도 바로 캡처됩니다. 단축키는 <code>chrome://extensions/shortcuts</code>에서 바꿀 수 있습니다.</div>
+  <button id="captureOpenTabsBtn">열려있는 쿠팡 상품 탭 모두 캡처</button>
+  <div class="section-desc" style="margin-top:-4px;">이미 직접 열어둔 상품 탭들을 그대로 읽기만 합니다. 새로 페이지를 열거나 요청을 보내지 않아 가장 안전합니다.</div>
+  <label class="rocket-filter-row"><input type="checkbox" id="closeTabsAfterCaptureCheckbox" /> 캡처에 성공한 탭은 자동으로 닫기 (실패한 탭은 확인할 수 있게 열어둡니다)</label>
+  <div id="status"></div>
+
+  <hr />
+  <label class="rocket-filter-row"><input type="checkbox" id="rocketOnlyCheckbox" /> 로켓 배지 상품만 수집 (판매자로켓/로켓배송/로켓프레시/로켓직구, 아래 두 기능에 공통 적용)</label>
+  <div class="keyword-count-row">
+    <span>상품 사이 대기시간(초) — 느릴수록 차단 위험이 낮습니다 (아래 두 기능에 공통 적용)</span>
+    <input type="number" id="productDelaySeconds" min="3" max="120" value="10" />
+  </div>
+
+  <div class="section-title">상품목록 자동 캡처 (차단 위험 있음)</div>
+  <div class="section-desc">쿠팡 검색/카테고리 목록 페이지에서 사용하세요. 화면에 보이는 상품을 순서대로 열어 판매자정보를 자동 캡처합니다. (최대 30개)</div>
+  <button id="batchStartBtn">이 페이지 자동 캡처 시작</button>
+
+  <hr />
+  <div class="section-title">키워드로 자동 수집 (차단 위험 있음)</div>
+  <div class="section-desc">키워드를 한 줄에 하나씩 입력하면, 각 키워드로 검색해 상위 상품들의 판매자정보를 순서대로 수집합니다. (최대 키워드 50개)</div>
+  <div class="source-row">
+    <label><input type="radio" name="keywordSource" id="sourceSearch" value="search" checked /> 일반 검색 (np/search)</label>
+    <label><input type="radio" name="keywordSource" id="sourceSellerDeals" value="sellerDeals" /> 판매자특가 (np/omp)</label>
+  </div>
+  <textarea id="keywordsInput" placeholder="예)&#10;컴퓨터책상&#10;게이밍 의자&#10;무선 청소기"></textarea>
+  <div class="keyword-count-row">
+    <span>키워드당 수집 개수</span>
+    <input type="number" id="perKeywordCount" min="1" max="30" value="30" />
+  </div>
+  <button id="keywordStartBtn">키워드 자동 수집 시작</button>
+
+  <div class="section-desc" style="margin-top:8px;">위 버튼은 각 상품을 열어 정보까지 자동으로 캡처합니다. 대신 <b>탭만 순서대로 열어두고 싶다면</b> 아래 버튼을 쓰세요 — 아무 것도 자동 클릭/캡처하지 않고 새 탭만 천천히 하나씩 엽니다. 다 열린 뒤 "열려있는 쿠팡 상품 탭 모두 캡처"로 직접 캡처하면, 새 요청 없이 읽기만 하므로 가장 안전합니다.</div>
+  <button id="keywordOpenTabsBtn" class="open-tabs-btn">키워드로 상품 탭만 순서대로 열기</button>
+
+  <div class="section-desc" style="margin-top:8px;"><b>"탭 열기" → "열려있는 탭 캡처하고 닫기"를 계속 반복하고 싶다면</b> 아래를 쓰세요. 위에서 정한 검색 대상/키워드/키워드당 개수/로켓 필터/상품 사이 대기시간을 그대로 써서, 정해진 간격마다 이 두 단계를 자동으로 반복합니다 — 캡처는 항상 "성공한 탭 자동 닫기"로 진행됩니다.</div>
+  <div class="keyword-count-row">
+    <span>반복 간격(분)</span>
+    <input type="number" id="repeatIntervalMinutes" min="1" max="180" value="15" />
+  </div>
+  <div class="keyword-count-row">
+    <span>최대 반복 횟수 (안전장치)</span>
+    <input type="number" id="repeatMaxCycles" min="1" max="200" value="20" />
+  </div>
+  <button id="repeatCycleStartBtn" class="open-tabs-btn">자동 반복 실행 시작</button>
+  <div id="repeatCycleProgress" class="section-desc" style="margin-top:-2px;"></div>
+  <div class="section-desc" style="margin-top:-4px;">중지하려면 아래 "중지" 버튼을 누르세요 — 반복 실행도 함께 멈춥니다.</div>
+
+  <hr />
+  <div class="row-buttons">
+    <button id="batchStopBtn">중지</button>
+  </div>
+  <div class="progress-bar" id="progressBar"><div class="progress-bar-fill" id="progressBarFill"></div></div>
+  <div id="batchProgress"></div>
+
+  <hr />
+  <div class="section-title">구글 시트 연동</div>
+  <div class="section-desc">Apps Script 웹앱 URL을 등록하면, 캡처할 때마다 자동으로 구글 스프레드시트에 실시간으로 쌓입니다. 설정 방법은 README를 참고하세요.</div>
+  <input type="text" id="sheetUrlInput" placeholder="https://script.google.com/macros/s/.../exec" />
+  <div class="row-buttons">
+    <button id="saveSheetUrlBtn">URL 저장</button>
+    <button id="syncNowBtn">지금 동기화</button>
+  </div>
+  <div id="sheetSyncStatus" class="section-desc" style="margin-top:-2px;"></div>
+
+  <hr />
+  <div class="count">저장된 항목: <b id="countNum">0</b>건</div>
+  <div class="row-buttons">
+    <button id="downloadBtn">CSV 다운로드</button>
+    <button id="dedupeBtn">중복 정리</button>
+    <button id="clearBtn">전체 삭제</button>
+  </div>
+  <button id="openMailComposerBtn">협업 메일 작성 도구 열기</button>
+  <div class="section-desc" style="margin-top:-4px;">CSV로 내보낸 엑셀(또는 다른 엑셀)을 올리면 이메일/상품명을 읽어 메일 초안을 만들어줍니다. 발송은 Gmail 작성창에서 직접 클릭해야 나갑니다.</div>
+
+  <hr />
+  <div class="section-title">네이버 스토어 리뷰 수집 (베타)</div>
+  <div class="section-desc">네이버 스마트스토어/브랜드스토어 상품페이지를 열고 리뷰 영역까지 스크롤해서 리뷰 목록이 보이는 상태로 만든 뒤 사용하세요. <b>최신순 500개 + 평점낮은순 500개</b>를 순서대로 모읍니다(둘 다 모을 대상이 없으면 그보다 적게 모일 수 있습니다). 실제 네이버 페이지에서 아직 충분히 검증되지 않은 베타 기능이라, 정렬/다음 버튼을 못 찾으면 조용히 건너뜁니다 — 진행 메시지를 확인해주세요.</div>
+  <button id="naverReviewStartBtn">리뷰 수집 시작</button>
+  <div class="row-buttons">
+    <button id="naverReviewStopBtn">중지</button>
+    <button id="naverReviewDownloadBtn">리뷰 CSV 다운로드</button>
+  </div>
+  <div id="naverReviewProgress" class="section-desc" style="margin-top:-2px;"></div>
+
+  <div id="list"></div>
+  <script src="shared.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
