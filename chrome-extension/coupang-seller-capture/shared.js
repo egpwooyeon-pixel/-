@@ -420,54 +420,74 @@ function clickSellerDealsProductCard(index) {
 }
 
 // --- 네이버 스마트스토어/브랜드스토어 리뷰 수집 --------------------
-// Written without being able to load a real naver.com page from this
-// environment (network policy blocks it) — everything below is a
-// best-effort first guess built from a screenshot, using the same
-// "match by visible text / structural shape, not exact class names"
-// philosophy as the Coupang functions above, since Naver's widget
-// classes are almost certainly hashed/rotating too. It will likely need
-// at least one round of correction against a live DevTools inspection
-// of an actual review card — see the README section on this feature.
+// Rewritten against real markup the user pasted from a live DevTools
+// inspection (2026-09) — first the sort-filter button, then a full
+// review card's outerHTML. Naver's own CSS-module class names here
+// (e.g. "PYRRKjHPB6") are fully opaque hashes with no stable semantic
+// prefix to match on (unlike Coupang's "styles_xxx__hash" pattern
+// elsewhere in this file), so these functions lean on the site's own
+// `data-shp-*` analytics attributes and `id="review_content_<id>"`-style
+// ids instead — those read as deliberately-named, not auto-generated,
+// so they should be far more durable across re-styles.
 
-// Clicks the sort control to select one of Naver's review sort options
-// ("최신순", "평점 낮은순", etc.). Two shapes are handled: (1) the
-// option is already a visible, directly-clickable tab/button — click it
-// straight away; (2) it's hidden inside a closed dropdown whose trigger
-// currently shows a *different* sort label — click that trigger to open
-// the menu and report back "opened_menu" so the caller (background.js)
-// can wait a moment and call this again, at which point the wanted
-// option should be directly visible via case (1).
+// Naver's review sort control turned out to be a `role="radio"` button
+// group where every option is simultaneously present and directly
+// clickable (no dropdown to open first) — each button carries
+// `data-shp-contents-type="리뷰정렬필터"` and
+// `data-shp-contents-id="<정확한 정렬명>"` (e.g. "최신순"). Matching on
+// that attribute sidesteps a plain-text match, which broke on the
+// hidden screen-reader-only "정렬하기" suffix span Naver appends after
+// the visible label. Falls back to a visible-text match (using only the
+// button's own direct text node, not its descendants) for any Naver
+// store template built differently.
 function clickNaverSortOption(labelCandidates) {
+  for (const label of labelCandidates) {
+    const btn = document.querySelector(`[data-shp-contents-type="리뷰정렬필터"][data-shp-contents-id="${label}"]`);
+    if (btn) {
+      if (btn.getAttribute("aria-checked") === "true") return { ok: true, already: true };
+      btn.click();
+      return { ok: true };
+    }
+  }
+
   const norm = (s) => (s || "").replace(/\s+/g, "");
   const wanted = labelCandidates.map(norm);
-  const isSmallVisibleEl = (el) => (!el.children || el.children.length <= 2) && el.offsetParent !== null;
-
-  const candidates = Array.from(document.querySelectorAll("button, a, span, li, div, option"));
-  const target = candidates.find((el) => isSmallVisibleEl(el) && wanted.indexOf(norm(el.textContent)) !== -1);
+  const ownText = (el) =>
+    Array.from(el.childNodes)
+      .filter((n) => n.nodeType === Node.TEXT_NODE)
+      .map((n) => n.textContent)
+      .join("");
+  const candidates = Array.from(document.querySelectorAll('[role="radio"], button, a, span, li'));
+  const target = candidates.find((el) => el.offsetParent !== null && wanted.indexOf(norm(ownText(el))) !== -1);
   if (target) {
     target.click();
     return { ok: true };
   }
 
-  const allSortLabels = ["랭킹순", "최신순", "평점높은순", "평점낮은순", "평점 높은순", "평점 낮은순"].map(norm);
-  const trigger = candidates.find((el) => isSmallVisibleEl(el) && allSortLabels.indexOf(norm(el.textContent)) !== -1);
-  if (trigger) {
-    trigger.click();
-    return { ok: false, reason: "opened_menu" };
-  }
-
   return { ok: false, reason: "sort_control_not_found" };
 }
 
-// Advances to the next page of the review list — tries an explicit
-// "다음"/"더보기" control first (more reliable across re-styles than a
-// numbered page link would be).
+// Advances to the next page of the review list. Still unverified
+// against a real pagination/"더보기" control (not yet seen via
+// DevTools) — tries the most common visible-text patterns as a first
+// guess. Important: real review cards were shown to reuse the exact
+// text "더보기" for two OTHER, unrelated things — expanding one
+// review's own truncated text (`data-shp-area-id="optmore"`,
+// `aria-labelledby="review_option_… review_content_…"`) and expanding a
+// seller's truncated reply (`data-shp-area-id="selmore"`) — so those are
+// explicitly excluded here to avoid clicking the wrong "더보기" and
+// merely expanding one card instead of loading the next page.
 function goToNextNaverReviewPage() {
   const norm = (s) => (s || "").replace(/\s+/g, "");
+  const excludedAreaIds = ["optmore", "selmore"];
   const candidates = Array.from(document.querySelectorAll("button, a, span, div, li"));
   const next = candidates.find((el) => {
     if (el.children && el.children.length > 2) return false;
     if (el.offsetParent === null) return false;
+    const areaId = el.getAttribute && el.getAttribute("data-shp-area-id");
+    if (areaId && excludedAreaIds.indexOf(areaId) !== -1) return false;
+    const labelledBy = el.getAttribute && el.getAttribute("aria-labelledby");
+    if (labelledBy && /review_(content|option)_/.test(labelledBy)) return false;
     const t = norm(el.textContent);
     return t === "다음" || t === "다음페이지" || t === "더보기" || t === "다음리뷰" || t === ">";
   });
@@ -477,76 +497,65 @@ function goToNextNaverReviewPage() {
   return { ok: true, label: next.textContent.trim() };
 }
 
-// Reads every review card currently rendered on the page. A card is
-// found structurally rather than by class: it's the smallest ancestor
-// that contains BOTH a masked-reviewer-id-looking leaf text (e.g.
-// "ohhj****") AND a short "yy.mm.dd." date leaf text near it — that
-// specific pairing is a strong, re-style-resistant signal for "this is
-// one review", the same reasoning as findProductCardContainer() above
-// for Coupang's product cards. `rating` is left blank here — deliberately
-// not guessed, since it's very likely rendered as a CSS star-width bar
-// or an aria-label rather than plain visible text, and guessing wrong
-// would silently produce fake numbers. Fill it in once a live DevTools
-// inspection of one review card shows how it's actually marked up.
+// Reads every review card currently rendered. Each review's content
+// block is uniquely identified by `data-shp-contents-type="review"` +
+// `data-shp-contents-id="<numeric review id>"` — its parent element is
+// the full card (rating/reviewer/date sit in a sibling block just
+// above it). `reviewId` is that numeric id, used as the primary dedupe
+// key in background.js instead of the old reviewerId+date+body-snippet
+// guess. `isBest` is deliberately left false always: the only "BEST"
+// text seen so far turned out to be part of a purchased option's own
+// name ("[★BEST] 퀸(Q) + 방수커버"), not a review-quality badge — a
+// generic text match on "BEST" would have produced a false positive
+// here, so this doesn't attempt it without seeing the real badge markup.
 function extractVisibleNaverReviews() {
   const idPattern = /^[a-zA-Z0-9_.]{2,}\*{2,}$/;
   const datePattern = /^\d{2}\.\d{2}\.\d{2}\.?$/;
+  const ratingPattern = /^[1-5]$/;
   const norm = (el) => (el && el.textContent ? el.textContent.trim() : "");
+  const ownText = (el) =>
+    Array.from(el.childNodes)
+      .filter((n) => n.nodeType === Node.TEXT_NODE)
+      .map((n) => n.textContent)
+      .join("")
+      .trim();
 
-  const allEls = Array.from(document.querySelectorAll("body *"));
-  const idEls = allEls.filter((el) => el.children.length === 0 && idPattern.test(norm(el)));
+  const contentEls = Array.from(document.querySelectorAll('[data-shp-contents-type="review"][data-shp-contents-id]'));
 
-  const seenCards = new Set();
-  const cards = [];
+  return contentEls.map((contentEl) => {
+    const reviewId = contentEl.getAttribute("data-shp-contents-id") || "";
+    const card = contentEl.parentElement || contentEl;
 
-  idEls.forEach((idEl) => {
-    let node = idEl;
-    let card = null;
-    for (let hop = 0; hop < 8 && node.parentElement; hop++) {
-      node = node.parentElement;
-      const hasDateChild = Array.from(node.querySelectorAll("*")).some(
-        (el) => el.children.length === 0 && datePattern.test(norm(el))
-      );
-      if (hasDateChild && norm(node).length > 30) {
-        card = node;
-        break;
-      }
-    }
-    if (!card || seenCards.has(card)) return;
-    seenCards.add(card);
-    cards.push({ card, idEl });
-  });
+    const idEl = Array.from(card.querySelectorAll("span, div")).find(
+      (el) => el.children.length === 0 && idPattern.test(norm(el))
+    );
+    const reviewerId = idEl ? norm(idEl) : "";
 
-  return cards.map((entry) => {
-    const card = entry.card;
-    const reviewerId = norm(entry.idEl);
-
-    const dateEl = Array.from(card.querySelectorAll("*")).find(
+    const dateEl = Array.from(card.querySelectorAll("span, div")).find(
       (el) => el.children.length === 0 && datePattern.test(norm(el))
     );
     const date = dateEl ? norm(dateEl) : "";
 
-    const isBest = /\bBEST\b/i.test(card.textContent);
-
-    const optionEl = Array.from(card.querySelectorAll("*")).find(
-      (el) => el.children.length === 0 && /(사이즈|색상|옵션)\s*[:：(]/.test(norm(el))
+    const ratingEl = Array.from(card.querySelectorAll("div, span")).find(
+      (el) => ratingPattern.test(ownText(el)) && Array.from(el.children).some((c) => c.tagName === "SVG")
     );
+    const rating = ratingEl ? ownText(ratingEl) : "";
+
+    const bodyEl = card.querySelector('[id^="review_content_"]');
+    const body = bodyEl ? norm(bodyEl) : "";
+
+    const optionEl = card.querySelector('[id^="review_option_"]');
     const option = optionEl ? norm(optionEl) : "";
 
-    const leafTexts = Array.from(card.querySelectorAll("*"))
-      .filter((el) => el.children.length === 0)
-      .map((el) => norm(el))
-      .filter((t) => t && t !== reviewerId && t !== date && t !== option);
-    const body = leafTexts.reduce((longest, t) => (t.length > longest.length ? t : longest), "");
-
     return {
+      reviewId,
       reviewerId,
       date,
+      rating,
       option,
       body,
-      isBest,
-      photoCount: card.querySelectorAll("img").length,
-      rating: "",
+      isBest: false,
+      photoCount: card.querySelectorAll('a[data-shp-area-id="reviewattach"]').length,
     };
   });
 }

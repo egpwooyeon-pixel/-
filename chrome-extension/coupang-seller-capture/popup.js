@@ -198,8 +198,8 @@ const NAVER_REVIEW_CSV_COLUMNS = [
   { key: "date", header: "작성일" },
   { key: "option", header: "구매옵션" },
   { key: "body", header: "리뷰내용" },
-  { key: "isBest", header: "베스트여부" },
   { key: "photoCount", header: "첨부사진수" },
+  { key: "reviewId", header: "리뷰ID" },
   { key: "pageUrl", header: "상품 URL" },
   { key: "capturedAt", header: "캡처일시" },
 ];

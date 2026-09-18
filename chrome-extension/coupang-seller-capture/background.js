@@ -784,10 +784,12 @@ async function setNaverReviewStatus(patch) {
   await chrome.storage.local.set({ naverReviewStatus: { ...current, ...patch } });
 }
 
-// Reviews have no public numeric id to dedupe by, so this combines
-// reviewer id + date + the first 40 chars of the body — cheap and good
-// enough to avoid re-adding the same review if a page gets re-read.
+// Each review's `data-shp-contents-id` (confirmed via live DevTools
+// inspection) is a real, stable numeric review id — use it directly
+// when present. Falls back to reviewer id + date + a body snippet for
+// any Naver template that doesn't expose that id.
 function naverReviewDedupeKey(review) {
+  if (review.reviewId) return "id:" + review.reviewId;
   return [review.reviewerId, review.date, (review.body || "").slice(0, 40)].join("|");
 }
 
