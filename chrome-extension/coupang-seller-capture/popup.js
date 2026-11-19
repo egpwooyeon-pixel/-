@@ -290,6 +290,107 @@ async function renderNaverReviewStatus() {
   }
 }
 
+// --- 네이버 플레이스(지도) 영수증리뷰 수집 (베타) -----------------
+
+const PLACE_REVIEW_CSV_COLUMNS = [
+  { key: "rating", header: "별점" },
+  { key: "nickname", header: "작성자" },
+  { key: "date", header: "방문일" },
+  { key: "visitCount", header: "방문횟수" },
+  { key: "authMethod", header: "인증수단" },
+  { key: "visitInfo", header: "방문정보" },
+  { key: "keywordTags", header: "키워드태그" },
+  { key: "body", header: "리뷰내용" },
+  { key: "photoCount", header: "첨부사진수" },
+  { key: "userId", header: "작성자ID" },
+  { key: "pageUrl", header: "플레이스 URL" },
+  { key: "capturedAt", header: "캡처일시" },
+];
+
+function buildPlaceReviewCsv(reviews) {
+  const header = PLACE_REVIEW_CSV_COLUMNS.map((c) => csvEscape(c.header)).join(",");
+  const rows = reviews.map((r) => PLACE_REVIEW_CSV_COLUMNS.map((c) => csvEscape(r[c.key])).join(","));
+  return [header, ...rows].join("\r\n");
+}
+
+async function handlePlaceReviewStart() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !tab.id) {
+    setStatus("현재 탭을 확인할 수 없습니다.", "error");
+    return;
+  }
+  if (!tab.url || !/(map|pcmap\.place|m\.place|place)\.naver\.com/i.test(tab.url)) {
+    setStatus("네이버 지도(map.naver.com) 업체 페이지에서 사용해주세요.", "error");
+    return;
+  }
+
+  const ok = window.confirm(
+    `현재 탭에서 리뷰를 최대 150건, 스크롤해서 불러오며 모읍니다(약 2.5초 간격).\n` +
+      `리뷰 탭이 화면에 보이는 상태여야 하며, 정렬 버튼은 건드리지 않고 지금 선택된 정렬 그대로 모읍니다.\n` +
+      `막 검증을 시작한 베타 기능이라 일부 업체 페이지에서 동작하지 않을 수 있습니다.\n시작할까요?`
+  );
+  if (!ok) return;
+
+  const response = await chrome.runtime.sendMessage({ type: "START_PLACE_REVIEW_COLLECTION", tabId: tab.id });
+  if (response && response.ok === false) {
+    setStatus("이미 다른 작업이 진행 중입니다.", "error");
+    return;
+  }
+  setStatus("네이버 플레이스 리뷰 수집을 시작했습니다.", "ok");
+  renderPlaceReviewStatus();
+}
+
+async function handlePlaceReviewStop() {
+  await chrome.runtime.sendMessage({ type: "STOP_BATCH" });
+  setStatus("네이버 플레이스 리뷰 수집을 중지했습니다.", "ok");
+  renderPlaceReviewStatus();
+}
+
+async function handlePlaceReviewDownload() {
+  const { placeReviews } = await chrome.storage.local.get("placeReviews");
+  const reviews = Array.isArray(placeReviews) ? placeReviews : [];
+  if (reviews.length === 0) {
+    setStatus("수집된 리뷰가 없습니다.", "error");
+    return;
+  }
+  const csv = "﻿" + buildPlaceReviewCsv(reviews);
+  const base64 = toBase64Utf8(csv);
+  const dateStr = formatDateTime(new Date()).replace(/[:\s]/g, "-");
+  try {
+    await chrome.downloads.download({
+      url: `data:text/csv;charset=utf-8;base64,${base64}`,
+      filename: `place_reviews_${dateStr}.csv`,
+      saveAs: true,
+    });
+    setStatus("리뷰 CSV 다운로드를 시작했습니다.", "ok");
+  } catch (err) {
+    setStatus("다운로드에 실패했습니다.", "error");
+  }
+}
+
+async function renderPlaceReviewStatus() {
+  const status = await chrome.runtime.sendMessage({ type: "GET_PLACE_REVIEW_STATUS" });
+  const el = document.getElementById("placeReviewProgress");
+  const startBtn = document.getElementById("placeReviewStartBtn");
+  if (!status || (!status.running && !status.collected)) {
+    el.textContent = "";
+    startBtn.disabled = !!(status && status.running);
+    return;
+  }
+  startBtn.disabled = !!status.running;
+  if (status.running) {
+    el.innerHTML = `수집 중 — <b>${status.collected}</b> / ${status.target}건`;
+  } else if (status.error === "interrupted") {
+    el.textContent = `크롬이 확장프로그램을 잠시 재시작해 중단됐습니다 (${status.collected}건까지 저장됨). 필요하면 다시 시작해주세요.`;
+  } else if (status.error === "cancelled") {
+    el.textContent = `중지됨: ${status.collected}건까지 수집됨`;
+  } else if (status.error) {
+    el.textContent = `${status.error} (${status.collected}건 수집됨)`;
+  } else {
+    el.textContent = `완료: ${status.collected}건 수집됨`;
+  }
+}
+
 // extractCapturedItemKey (from shared.js) identifies a seller offer
 // by vendorItemId/itemId/productId, ignoring per-visit tracking
 // params, so this catches duplicates even if they were captured
@@ -753,6 +854,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   renderSheetSyncStatus();
   renderNaverReviewStatus();
   renderRepeatCycleStatus();
+  renderPlaceReviewStatus();
 
   if (batchStatus && batchStatus.running) {
     // The stored state says a batch is running; ping the background
@@ -766,6 +868,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (changes.batchStatus) renderBatchStatus(changes.batchStatus.newValue);
     if (changes.naverReviewStatus) renderNaverReviewStatus();
     if (changes.repeatCycleState) renderRepeatCycleStatus();
+    if (changes.placeReviewStatus) renderPlaceReviewStatus();
     if (changes.records) {
       renderList(Array.isArray(changes.records.newValue) ? changes.records.newValue : []);
       renderSheetSyncStatus();
@@ -790,6 +893,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("naverReviewStartBtn").addEventListener("click", handleNaverReviewStart);
   document.getElementById("naverReviewStopBtn").addEventListener("click", handleNaverReviewStop);
   document.getElementById("naverReviewDownloadBtn").addEventListener("click", handleNaverReviewDownload);
+  document.getElementById("placeReviewStartBtn").addEventListener("click", handlePlaceReviewStart);
+  document.getElementById("placeReviewStopBtn").addEventListener("click", handlePlaceReviewStop);
+  document.getElementById("placeReviewDownloadBtn").addEventListener("click", handlePlaceReviewDownload);
   document.getElementById("openBlogWriterBtn").addEventListener("click", () => {
     chrome.tabs.create({ url: chrome.runtime.getURL("blog-writer.html") });
   });

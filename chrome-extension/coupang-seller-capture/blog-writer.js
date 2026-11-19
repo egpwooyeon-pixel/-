@@ -30,6 +30,30 @@ async function saveApiKey() {
   setStatus("API 설정을 저장했습니다.");
 }
 
+async function handleLoadCollected() {
+  const { placeReviews } = await chrome.storage.local.get("placeReviews");
+  const reviews = Array.isArray(placeReviews) ? placeReviews : [];
+  const statusEl = document.getElementById("loadCollectedStatus");
+  if (reviews.length === 0) {
+    statusEl.textContent = "수집된 플레이스 리뷰가 없습니다 — 먼저 확장프로그램 팝업에서 리뷰 수집을 실행하세요.";
+    return;
+  }
+  // Each review's body may itself contain line breaks (from the
+  // page's own <br> tags) — flatten those to spaces so the one-
+  // review-per-line convention the textarea/parseReviewsInput rely on
+  // still holds after this prefill.
+  const lines = reviews
+    .filter((r) => r.body && r.body.trim())
+    .map((r) => {
+      const flatBody = r.body.replace(/\s*\n\s*/g, " ").trim();
+      const ratingPart = r.rating ? `[${r.rating}점] ` : "";
+      const tagPart = r.keywordTags ? ` (키워드: ${r.keywordTags})` : "";
+      return `${ratingPart}${flatBody}${tagPart}`;
+    });
+  document.getElementById("reviewsInput").value = lines.join("\n");
+  statusEl.textContent = `${lines.length}건을 불러왔습니다 — 필요하면 직접 수정/삭제 후 생성하세요.`;
+}
+
 function parseReviewsInput() {
   const raw = document.getElementById("reviewsInput").value || "";
   return raw
@@ -143,6 +167,7 @@ async function handleCopyDraft() {
 document.addEventListener("DOMContentLoaded", () => {
   loadSettings();
   document.getElementById("saveApiKeyBtn").addEventListener("click", saveApiKey);
+  document.getElementById("loadCollectedBtn").addEventListener("click", handleLoadCollected);
   document.getElementById("generateBtn").addEventListener("click", handleGenerate);
   document.getElementById("copyDraftBtn").addEventListener("click", handleCopyDraft);
 });

@@ -334,8 +334,18 @@
   <div id="naverReviewProgress" class="section-desc" style="margin-top:-2px;"></div>
 
   <hr />
+  <div class="section-title">네이버 플레이스 영수증리뷰 수집 (베타)</div>
+  <div class="section-desc">네이버 지도(map.naver.com)에서 업체를 검색해 리뷰 탭이 화면에 보이는 상태로 만든 뒤 사용하세요. 현재 보이는 정렬 기준(추천순/최신순 중 선택된 것) 그대로 스크롤해서 최대 150건을 모읍니다 — 정렬 버튼 자체를 조작하진 않습니다. 실제 페이지에서 막 검증을 시작한 베타 기능이라 안 될 수 있습니다.</div>
+  <button id="placeReviewStartBtn">리뷰 수집 시작</button>
+  <div class="row-buttons">
+    <button id="placeReviewStopBtn">중지</button>
+    <button id="placeReviewDownloadBtn">리뷰 CSV 다운로드</button>
+  </div>
+  <div id="placeReviewProgress" class="section-desc" style="margin-top:-2px;"></div>
+
+  <hr />
   <div class="section-title">네이버 플레이스 블로그 원고 도구 (베타)</div>
-  <div class="section-desc">네이버 플레이스 영수증리뷰를 붙여넣으면 AI(Anthropic API, 본인 키 필요)가 키워드를 분류하고 블로그 원고 초안을 만들어줍니다. 자동 수집은 아직 지원하지 않아 리뷰를 직접 복사해서 넣어야 합니다.</div>
+  <div class="section-desc">위에서 수집한 영수증리뷰를 붙여넣으면 AI(Anthropic API, 본인 키 필요)가 키워드를 분류하고 블로그 원고 초안을 만들어줍니다.</div>
   <button id="openBlogWriterBtn">블로그 원고 도구 열기</button>
 
   <div id="list"></div>

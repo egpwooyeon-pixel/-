@@ -583,6 +583,169 @@ function extractVisibleNaverReviews() {
   });
 }
 
+// --- 네이버 플레이스(지도) 영수증리뷰 수집 ------------------------
+// Built from real markup the user pasted (outerHTML of one full
+// `<li class="place_apply_pui">` review card, confirmed live on a
+// map.naver.com place panel, 2026-11). Like the Smart Store reviews
+// above, most of Naver's own classes here are opaque "pui__xxxxxx"
+// hashes, but two things read as deliberately-named rather than
+// per-build hashes and are used as the primary anchors: the review
+// card's own root class "place_apply_pui" (and "place_thumb" on photo
+// links), and the `data-pui-click-code` attributes Naver's own
+// analytics tagging puts on interactive elements (e.g. "profile",
+// "visitkeywords", "rvshowmore") — same bet the Smart Store scraper
+// makes on `data-shp-*`. Where there's no such attribute to anchor on
+// (the nickname span, the star-rating block, the keyword-tag list, the
+// date/visit-count/인증수단 row), this falls back to the exact
+// "pui__xxxxxx" class confirmed in that one sample — those are the
+// parts most likely to need a fix if Naver ships a new CSS-module
+// build; see the README for what to send if this stops working.
+function extractVisiblePlaceReviews() {
+  const ownText = (el) =>
+    Array.from(el.childNodes)
+      .filter((n) => n.nodeType === Node.TEXT_NODE)
+      .map((n) => n.textContent)
+      .join("")
+      .trim();
+
+  // Review bodies use <br> for line breaks, which plain textContent
+  // would silently drop — walk child nodes so they survive as "\n".
+  function textWithBreaks(el) {
+    let out = "";
+    el.childNodes.forEach((node) => {
+      if (node.nodeType === Node.TEXT_NODE) out += node.textContent;
+      else if (node.tagName === "BR") out += "\n";
+      else if (node.nodeType === Node.ELEMENT_NODE) out += textWithBreaks(node);
+    });
+    return out.trim();
+  }
+
+  const cards = Array.from(document.querySelectorAll("li.place_apply_pui"));
+
+  return cards.map((card) => {
+    const nicknameEl = card.querySelector(".pui__NMi-Dp");
+    const nickname = nicknameEl ? nicknameEl.textContent.trim() : "";
+
+    // Both the thumbnail link and the nickname link point to the same
+    // `/my/<id>/review` profile URL — either one yields the same id.
+    const profileLink = card.querySelector('a[data-pui-click-code="profile"][href*="/my/"]');
+    const hrefMatch = profileLink ? (profileLink.getAttribute("href") || "").match(/\/my\/([a-zA-Z0-9]+)\//) : null;
+    const userId = hrefMatch ? hrefMatch[1] : "";
+
+    const ratingEl = card.querySelector(".pui__6abRMf");
+    const ratingMatch = ratingEl ? ratingEl.textContent.match(/\d+/) : null;
+    const rating = ratingMatch ? ratingMatch[0] : "";
+
+    const visitInfoLink = card.querySelector('a[data-pui-click-code="visitkeywords"]');
+    const visitInfo = visitInfoLink
+      ? Array.from(visitInfoLink.querySelectorAll(".pui__V8F9nN"))
+          .map((el) => el.textContent.trim())
+          .filter(Boolean)
+          .join(", ")
+      : "";
+
+    // Two <a data-pui-click-code="rvshowmore"> elements share the same
+    // click-code — the body text and the "더보기" toggle. The toggle is
+    // the only one whose own text is exactly "더보기"; everything else
+    // (actual review text, however short) is the body. The full text
+    // is already present in the DOM even when CSS visually clamps it,
+    // so there's no need to click "더보기" to read the whole thing.
+    const bodyLinks = Array.from(card.querySelectorAll('a[data-pui-click-code="rvshowmore"]'));
+    const bodyLink = bodyLinks.find((a) => a.textContent.trim() !== "더보기") || bodyLinks[0];
+    const body = bodyLink ? textWithBreaks(bodyLink) : "";
+
+    const keywordTags = Array.from(card.querySelectorAll(".pui__YKL-Tr li"))
+      .map((li) => li.textContent.trim())
+      .filter(Boolean)
+      .join(", ");
+
+    const timeEl = card.querySelector("time");
+    const date = timeEl ? timeEl.textContent.trim() : "";
+
+    // The date/방문횟수/인증수단 row is three sibling spans in a fixed
+    // order confirmed from the sample card; the 인증수단 span also
+    // contains a visually-hidden "인증 수단" label as a child element,
+    // so ownText() (direct text nodes only) is used there to get just
+    // "영수증" and not the label glued onto it.
+    const infoSpans = Array.from(card.querySelectorAll(".pui__QKE5Pr > .pui__gfuUIT"));
+    const visitCount = infoSpans[1] ? infoSpans[1].textContent.trim() : "";
+    const authMethod = infoSpans[2] ? ownText(infoSpans[2]) : "";
+
+    return {
+      nickname,
+      userId,
+      rating,
+      visitInfo,
+      body,
+      keywordTags,
+      date,
+      visitCount,
+      authMethod,
+      photoCount: card.querySelectorAll("a.place_thumb").length,
+    };
+  });
+}
+
+// The review panel on a Naver map place page reads as a narrow,
+// independently-scrolled side column rather than the whole browser
+// page scrolling (unlike the Smart Store product page this mirrors),
+// so this scrolls whichever ancestor of the last card actually has
+// its own scrollbar — found by walking up until something has
+// overflow-y auto/scroll and real extra height — in addition to
+// `scrollIntoView` (which already targets the right scroll container
+// on its own) and a plain window scroll as a harmless fallback in
+// case the list isn't in its own panel after all.
+async function loadMorePlaceReviews() {
+  const getCards = () => document.querySelectorAll("li.place_apply_pui");
+
+  function findScrollableAncestor(el) {
+    let node = el.parentElement;
+    while (node && node !== document.body) {
+      const style = getComputedStyle(node);
+      if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight + 4) {
+        return node;
+      }
+      node = node.parentElement;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+
+  const before = getCards().length;
+  if (before === 0) return { ok: false, reason: "no_cards_yet", before: 0, after: 0 };
+
+  let lastHeight = 0;
+  let stableHeightCount = 0;
+  for (let i = 0; i < 20; i++) {
+    const cardsNow = getCards();
+    const lastCard = cardsNow[cardsNow.length - 1];
+    const scrollTarget = lastCard ? findScrollableAncestor(lastCard) : document.scrollingElement || document.documentElement;
+
+    if (lastCard) lastCard.scrollIntoView({ block: "end" });
+    scrollTarget.scrollTop = scrollTarget.scrollHeight;
+    window.scrollTo(0, Math.max(document.body.scrollHeight, document.documentElement.scrollHeight));
+    scrollTarget.dispatchEvent(new Event("scroll"));
+    window.dispatchEvent(new Event("scroll"));
+    document.dispatchEvent(new Event("scroll"));
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    if (getCards().length > before) break;
+
+    const nowHeight = scrollTarget.scrollHeight;
+    stableHeightCount = nowHeight === lastHeight ? stableHeightCount + 1 : 0;
+    lastHeight = nowHeight;
+    if (stableHeightCount >= 4) break;
+  }
+
+  const start = Date.now();
+  while (Date.now() - start < 4000 && getCards().length === before) {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+
+  const after = getCards().length;
+  return { ok: after > before, before, after };
+}
+
 // Runs on a Gmail compose tab (mail.google.com) that background.js just
 // opened via the compose URL scheme (view=cm&to=&su=&body=). Shows a
 // countdown banner and, when it reaches 0, clicks Gmail's own Send

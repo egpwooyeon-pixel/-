@@ -944,13 +944,142 @@ async function startNaverReviewCollection(tabId) {
   await setNaverReviewStatus({ running: false, error: cancelRequested ? "cancelled" : "" });
 }
 
+// --- 네이버 플레이스(지도) 영수증리뷰 수집 ------------------------
+// extractVisiblePlaceReviews and loadMorePlaceReviews (shared.js) were
+// built and confirmed against a real review card's outerHTML the user
+// pasted. No sort control is touched here (unlike the Smart Store
+// collector above) — this just collects whatever's currently sorted/
+// visible, scrolling to load more, since the place panel's own
+// "추천순/최신순" sort buttons haven't been inspected yet. Runs with
+// `allFrames: true` because it isn't confirmed whether the review
+// panel on a map.naver.com place page is same-frame or an embedded
+// pcmap.place.naver.com iframe — each frame is tried and empty results
+// from the wrong one are harmless.
+const PLACE_REVIEW_TARGET = 150;
+
+async function getPlaceReviewStatus() {
+  const { placeReviewStatus } = await chrome.storage.local.get("placeReviewStatus");
+  return (
+    placeReviewStatus || {
+      running: false,
+      phase: "",
+      collected: 0,
+      target: PLACE_REVIEW_TARGET,
+      error: "",
+    }
+  );
+}
+
+async function setPlaceReviewStatus(patch) {
+  const current = await getPlaceReviewStatus();
+  await chrome.storage.local.set({ placeReviewStatus: { ...current, ...patch } });
+}
+
+// No stable per-review id is exposed in the markup seen so far, so
+// this falls back to the same kind of composite key the Smart Store
+// collector uses when it lacks one: reviewer + date + a body snippet.
+function placeReviewDedupeKey(review) {
+  return [review.userId, review.date, (review.body || "").slice(0, 40)].join("|");
+}
+
+async function appendPlaceReviews(newReviews) {
+  const { placeReviews } = await chrome.storage.local.get("placeReviews");
+  const list = Array.isArray(placeReviews) ? placeReviews : [];
+  const seen = new Set(list.map(placeReviewDedupeKey));
+  let added = 0;
+  newReviews.forEach((r) => {
+    const key = placeReviewDedupeKey(r);
+    if (seen.has(key)) return;
+    seen.add(key);
+    list.push(r);
+    added++;
+  });
+  await chrome.storage.local.set({ placeReviews: list });
+  return added;
+}
+
+async function startPlaceReviewCollection(tabId) {
+  isRunning = true;
+  cancelRequested = false;
+  stopReason = "";
+
+  await chrome.storage.local.set({ placeReviews: [] });
+  await setPlaceReviewStatus({
+    running: true,
+    phase: "",
+    collected: 0,
+    target: PLACE_REVIEW_TARGET,
+    error: "",
+    startedAt: Date.now(),
+  });
+
+  let pageUrl = "";
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    pageUrl = tab.url || "";
+  } catch (err) {
+    // ignore; pageUrl stays blank
+  }
+
+  let collected = 0;
+  let round = 0;
+  const MAX_ROUNDS = 40;
+
+  while (collected < PLACE_REVIEW_TARGET && round < MAX_ROUNDS && !cancelRequested) {
+    let pageReviews = [];
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        func: extractVisiblePlaceReviews,
+      });
+      pageReviews = (results || []).flatMap((r) => (r && r.result) || []);
+    } catch (err) {
+      await setPlaceReviewStatus({ error: "리뷰 추출 중 오류: " + ((err && err.message) || "알 수 없는 오류") });
+      break;
+    }
+
+    if (pageReviews.length === 0 && round === 0) {
+      await setPlaceReviewStatus({
+        error: "리뷰를 찾지 못했습니다 — 플레이스 리뷰 탭이 화면에 보이는 상태인지 확인하거나, 리뷰 카드 outerHTML을 다시 보내주세요.",
+      });
+      break;
+    }
+
+    const tagged = pageReviews.map((r) => ({ ...r, pageUrl, capturedAt: formatDateTime(new Date()) }));
+    const added = await appendPlaceReviews(tagged);
+    collected += added;
+    await setPlaceReviewStatus({ collected, phase: `${collected}건 수집됨` });
+
+    if (collected >= PLACE_REVIEW_TARGET || cancelRequested) break;
+
+    let hasNext = false;
+    try {
+      const nextResults = await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        func: loadMorePlaceReviews,
+      });
+      hasNext = (nextResults || []).some((r) => r && r.result && r.result.ok);
+    } catch (err) {
+      hasNext = false;
+    }
+    if (!hasNext) break;
+
+    round++;
+    await delayWithJitter(2500);
+  }
+
+  isRunning = false;
+  if (cancelRequested) {
+    await setPlaceReviewStatus({ running: false, error: "cancelled" });
+  } else {
+    await setPlaceReviewStatus({ running: false });
+  }
+}
+
 // --- 네이버 플레이스 후기 기반 블로그 원고 생성 (AI) ---------------
-// Takes review text the user pasted by hand (there's no DOM-verified
-// auto-scraper yet for 네이버 플레이스 영수증리뷰 — unlike the Naver
-// store review collector above, this site's markup hasn't been
-// confirmed against real DevTools output, so this tool starts from a
-// manual-paste flow instead of guessing selectors that would likely be
-// wrong) plus basic store info, and asks the Anthropic Claude API to
+// Takes review text the user pasted by hand, or pulled in from the
+// place-review collector above, plus basic store info, and asks the
+// Anthropic Claude API to
 // (1) classify recurring keywords into 필수/좋은/시그니처메뉴 buckets and
 // (2) draft a natural first-person blog post that works them in. The
 // user's own Anthropic API key is stored locally and sent directly to
@@ -1446,6 +1575,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     getNaverReviewStatus().then(sendResponse);
     return true;
   }
+  if (message && message.type === "START_PLACE_REVIEW_COLLECTION" && message.tabId) {
+    if (isRunning || repeatCycleRunning) {
+      sendResponse({ ok: false, reason: "already_running" });
+      return false;
+    }
+    startPlaceReviewCollection(message.tabId);
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (message && message.type === "GET_PLACE_REVIEW_STATUS") {
+    getPlaceReviewStatus().then(sendResponse);
+    return true;
+  }
   if (message && message.type === "START_MAIL_AUTOSEND" && Array.isArray(message.queue)) {
     startMailAutosend(message.queue, message.countdownSeconds, message.perHour, message.sheetUrl, message.dailyLimit).then(
       sendResponse
@@ -1522,6 +1664,10 @@ chrome.commands.onCommand.addListener(async (command) => {
   const naverStatus = await getNaverReviewStatus();
   if (naverStatus.running && !isRunning) {
     await setNaverReviewStatus({ running: false, error: "interrupted" });
+  }
+  const placeStatus = await getPlaceReviewStatus();
+  if (placeStatus.running && !isRunning) {
+    await setPlaceReviewStatus({ running: false, error: "interrupted" });
   }
   // Unlike the two above, an active repeat cycle isn't marked
   // "interrupted" here — its REPEAT_CYCLE_ALARM_NAME alarm survives this
