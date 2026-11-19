@@ -790,4 +790,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("naverReviewStartBtn").addEventListener("click", handleNaverReviewStart);
   document.getElementById("naverReviewStopBtn").addEventListener("click", handleNaverReviewStop);
   document.getElementById("naverReviewDownloadBtn").addEventListener("click", handleNaverReviewDownload);
+  document.getElementById("openBlogWriterBtn").addEventListener("click", () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL("blog-writer.html") });
+  });
 });

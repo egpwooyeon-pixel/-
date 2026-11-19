@@ -944,6 +944,141 @@ async function startNaverReviewCollection(tabId) {
   await setNaverReviewStatus({ running: false, error: cancelRequested ? "cancelled" : "" });
 }
 
+// --- 네이버 플레이스 후기 기반 블로그 원고 생성 (AI) ---------------
+// Takes review text the user pasted by hand (there's no DOM-verified
+// auto-scraper yet for 네이버 플레이스 영수증리뷰 — unlike the Naver
+// store review collector above, this site's markup hasn't been
+// confirmed against real DevTools output, so this tool starts from a
+// manual-paste flow instead of guessing selectors that would likely be
+// wrong) plus basic store info, and asks the Anthropic Claude API to
+// (1) classify recurring keywords into 필수/좋은/시그니처메뉴 buckets and
+// (2) draft a natural first-person blog post that works them in. The
+// user's own Anthropic API key is stored locally and sent directly to
+// api.anthropic.com from this service worker — never to any server of
+// ours. Only review body text is sent, never reviewer names/ids, so no
+// individual reviewer's identity reaches the third-party API.
+
+let blogDraftRunning = false;
+
+async function getBlogDraftStatus() {
+  const { blogDraftStatus } = await chrome.storage.local.get("blogDraftStatus");
+  return (
+    blogDraftStatus || {
+      running: false,
+      phase: "",
+      error: "",
+      result: null,
+      updatedAt: 0,
+    }
+  );
+}
+
+async function setBlogDraftStatus(patch) {
+  const current = await getBlogDraftStatus();
+  const next = { ...current, ...patch, updatedAt: Date.now() };
+  await chrome.storage.local.set({ blogDraftStatus: next });
+  return next;
+}
+
+function buildBlogDraftPrompt({ storeName, storeArea, storeCategory, signatureMenuHint, reviews }) {
+  const reviewBlock = reviews.map((r, i) => `${i + 1}. ${r}`).join("\n");
+
+  return `당신은 실제 방문 경험을 바탕으로 자연스러운 블로그 후기를 쓰는 한국어 블로거입니다. 아래는 "${storeName}"(${storeArea}, ${storeCategory}) 네이버 플레이스에 달린 실제 영수증리뷰 ${reviews.length}건입니다. 이 리뷰들에 공통적으로 나타나는 표현과 평가만 근거로 사용하세요 — 리뷰에 없는 내용을 지어내지 마세요.
+
+[리뷰 목록]
+${reviewBlock}
+${signatureMenuHint ? `\n[참고: 알려준 시그니처 메뉴] ${signatureMenuHint}\n` : ""}
+다음 작업을 수행하고, 다른 설명 없이 아래 JSON 형식으로만 답하세요(마크다운 코드블록 없이 순수 JSON 하나만):
+
+{
+  "requiredKeywords": ["지역+업종 조합 등 블로그 제목/본문에 꼭 들어가야 하는 키워드 2~4개"],
+  "goodKeywords": ["리뷰에서 반복적으로 나타나는 긍정 표현(분위기, 가성비, 친절, 웨이팅 등) 3~6개"],
+  "signatureMenu": ["리뷰에 자주 언급된 구체적 메뉴/음식 이름 1~5개"],
+  "draft": "실제 1인칭 방문 후기 톤의 블로그 본문 전체 텍스트. 800~1200자 내외, 과장 광고 문구 없이 자연스럽게 위 키워드들을 녹여서, 소제목 없이 문단 2~4개로 작성. 리뷰에 단점/주의사항(예: 웨이팅, 협소한 주차)이 보이면 1개 정도 솔직하게 포함."
+}`;
+}
+
+async function callAnthropicForBlogDraft({ apiKey, model, prompt }) {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 2000,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const errJson = await res.json();
+      detail = (errJson && errJson.error && errJson.error.message) || "";
+    } catch (err) {
+      // response body wasn't JSON — leave detail blank
+    }
+    throw new Error(`API 오류 (${res.status})${detail ? ": " + detail : ""}`);
+  }
+
+  const data = await res.json();
+  const text = data && data.content && data.content[0] && data.content[0].text;
+  if (!text) throw new Error("API 응답에서 텍스트를 찾지 못했습니다.");
+  return text;
+}
+
+// The model is asked for pure JSON but may still wrap it in a markdown
+// fence or add stray whitespace — strip that defensively before
+// parsing. If parsing still fails, falls back to showing the raw text
+// as the draft (with empty keyword lists) rather than losing the
+// response entirely.
+function parseBlogDraftResponse(text) {
+  const cleaned = text
+    .trim()
+    .replace(/^```(json)?/i, "")
+    .replace(/```$/, "")
+    .trim();
+  let parsed;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (err) {
+    return { requiredKeywords: [], goodKeywords: [], signatureMenu: [], draft: text, parseFailed: true };
+  }
+  return {
+    requiredKeywords: Array.isArray(parsed.requiredKeywords) ? parsed.requiredKeywords : [],
+    goodKeywords: Array.isArray(parsed.goodKeywords) ? parsed.goodKeywords : [],
+    signatureMenu: Array.isArray(parsed.signatureMenu) ? parsed.signatureMenu : [],
+    draft: typeof parsed.draft === "string" ? parsed.draft : text,
+    parseFailed: false,
+  };
+}
+
+async function generateBlogDraft({ storeName, storeArea, storeCategory, signatureMenuHint, reviews, apiKey, model }) {
+  if (blogDraftRunning) return { ok: false, reason: "already_running" };
+  if (!apiKey) return { ok: false, reason: "no_api_key" };
+  if (!Array.isArray(reviews) || reviews.length === 0) return { ok: false, reason: "no_reviews" };
+
+  blogDraftRunning = true;
+  await setBlogDraftStatus({ running: true, phase: "AI 분석 중", error: "", result: null });
+
+  try {
+    const prompt = buildBlogDraftPrompt({ storeName, storeArea, storeCategory, signatureMenuHint, reviews });
+    const text = await callAnthropicForBlogDraft({ apiKey, model: model || "claude-sonnet-5-5", prompt });
+    const result = parseBlogDraftResponse(text);
+    await setBlogDraftStatus({ running: false, phase: "완료", error: "", result });
+    return { ok: true, result };
+  } catch (err) {
+    await setBlogDraftStatus({ running: false, phase: "", error: (err && err.message) || "알 수 없는 오류" });
+    return { ok: false, reason: "error", error: (err && err.message) || "알 수 없는 오류" };
+  } finally {
+    blogDraftRunning = false;
+  }
+}
+
 // --- 자동 반복 실행 (탭 열기 → 열려있는 탭 캡처+닫기를 주기적으로 반복) ----
 // Chains the two existing, already-safe steps the user was doing by
 // hand every time — "키워드로 상품 탭만 순서대로 열기" then "열려있는
@@ -1325,6 +1460,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     getMailAutosendState().then(sendResponse);
     return true;
   }
+  if (message && message.type === "GENERATE_BLOG_DRAFT" && Array.isArray(message.reviews)) {
+    generateBlogDraft(message).then(sendResponse);
+    return true;
+  }
+  if (message && message.type === "GET_BLOG_DRAFT_STATUS") {
+    getBlogDraftStatus().then(sendResponse);
+    return true;
+  }
   return false;
 });
 
@@ -1389,4 +1532,9 @@ chrome.commands.onCommand.addListener(async (command) => {
   // resumed, but nothing is left stuck).
   const repeatCycle = await getRepeatCycleState();
   if (repeatCycle.running) repeatCycleRunning = true;
+
+  const blogStatus = await getBlogDraftStatus();
+  if (blogStatus.running && !blogDraftRunning) {
+    await setBlogDraftStatus({ running: false, error: "interrupted" });
+  }
 })();
