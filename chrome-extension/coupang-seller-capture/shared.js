@@ -518,30 +518,59 @@ async function loadMoreNaverReviews() {
   const before = getCards().length;
   if (before === 0) return { ok: false, reason: "no_cards_yet", before: 0, after: 0 };
 
+  // Confirmed live: manual mouse-wheel scrolling keeps loading more
+  // reviews well past where this used to give up (stopped at 33 of
+  // 425 photo reviews under the "포토/동영상" filter) — so the list
+  // itself genuinely keeps paging, this just wasn't reliably
+  // retriggering it deep into a long list. The previous version
+  // teleported straight to the current max scrollHeight every
+  // iteration and dispatched one synthetic "scroll" event, which
+  // seems to give whatever lazy-load trigger the page uses fewer
+  // chances to fire than real scrolling does (which generates many
+  // scroll/intersection events along the way) — and only waited 500ms
+  // with a 4-strike bailout, which may simply be too impatient once
+  // each new batch takes longer to fetch/render deeper into a long
+  // list. This scrolls in smaller incremental steps (more events,
+  // closer to organic scrolling) and gives each attempt more time and
+  // more retries before concluding the list really has stopped
+  // growing.
   let lastHeight = 0;
   let stableHeightCount = 0;
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 40; i++) {
     const cardsNow = getCards();
+    const currentY = window.scrollY || document.documentElement.scrollTop;
+    const viewportStep = Math.max(window.innerHeight * 0.85, 500);
+    const target = Math.min(currentY + viewportStep, scrollHeight());
+
+    window.scrollTo(0, target);
+    window.dispatchEvent(new Event("scroll"));
+    document.dispatchEvent(new Event("scroll"));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    // One more nudge to the very bottom plus an explicit wheel event,
+    // in case the loader specifically watches a sentinel element right
+    // at the end of the list rather than general scroll position.
     if (cardsNow.length > 0) {
       cardsNow[cardsNow.length - 1].scrollIntoView({ block: "end" });
     }
     window.scrollTo(0, scrollHeight());
+    window.dispatchEvent(new WheelEvent("wheel", { deltaY: 800, bubbles: true }));
     window.dispatchEvent(new Event("scroll"));
     document.dispatchEvent(new Event("scroll"));
 
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 700));
 
     if (getCards().length > before) break;
 
     const nowHeight = scrollHeight();
     stableHeightCount = nowHeight === lastHeight ? stableHeightCount + 1 : 0;
     lastHeight = nowHeight;
-    if (stableHeightCount >= 4) break; // page genuinely stopped growing after repeated tries
+    if (stableHeightCount >= 8) break; // page genuinely stopped growing after many repeated tries
   }
 
-  // Give one last in-flight fetch a bit more time to resolve.
+  // Give one last in-flight fetch more time to resolve.
   const start = Date.now();
-  while (Date.now() - start < 4000 && getCards().length === before) {
+  while (Date.now() - start < 7000 && getCards().length === before) {
     await new Promise((resolve) => setTimeout(resolve, 400));
   }
 

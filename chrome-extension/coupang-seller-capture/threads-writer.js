@@ -93,6 +93,35 @@ async function handleLoadCollected() {
   updatePoolStats();
 }
 
+// Mirrors handleLoadCollected above but reads the Smart Store review
+// pool (naverReviews, collected via the popup's "네이버 스토어 리뷰
+// 수집" with the "포토/동영상" filter checked) instead of the Place
+// review pool — same normalized shape (nickname/body/rating/photoUrls)
+// so buildThreadsPostPlan works on either source unchanged.
+async function handleLoadNaverStoreReviews() {
+  const { naverReviews } = await chrome.storage.local.get("naverReviews");
+  const reviews = Array.isArray(naverReviews) ? naverReviews : [];
+  const statusEl = document.getElementById("loadCollectedStatus");
+  if (reviews.length === 0) {
+    statusEl.textContent = "수집된 스마트스토어 리뷰가 없습니다 — 먼저 확장프로그램 팝업에서 리뷰 수집을 실행하세요.";
+    document.getElementById("poolStats").classList.add("hidden");
+    return;
+  }
+  const normalized = reviews.map((r) => ({
+    nickname: r.reviewerId || "",
+    body: r.body || "",
+    rating: r.rating || "",
+    keywordTags: "",
+    placeName: "",
+    photoUrls: Array.isArray(r.photoUrls) ? r.photoUrls : [],
+  }));
+  lastLoadedReviews = normalized;
+
+  const photoCount = countTotalPhotos(normalized);
+  statusEl.textContent = `${normalized.length}건을 불러왔습니다 (사진 ${photoCount}장 포함) — 상품명(상호명)은 자동으로 못 채우니 직접 입력하세요.`;
+  updatePoolStats();
+}
+
 // Builds up to `maxPosts` posts, each exactly `photosPerPost` photos —
 // and, deliberately, each post's photos all come from the SAME single
 // review. An earlier version pooled every review's photos together
@@ -372,6 +401,7 @@ async function handleGenerate() {
   }
 
   let succeeded = 0;
+  let stoppedByQuota = false;
   for (let i = 0; i < plan.length; i++) {
     const photoSlots = plan[i];
     const uniqueReviewIndexes = Array.from(new Set(photoSlots.map((p) => p.reviewIndex)));
@@ -401,6 +431,18 @@ async function handleGenerate() {
       else if (reason === "no_photos") msg = "사진이 없습니다.";
       else msg = `생성 실패: ${(response && response.error) || "알 수 없는 오류"}`;
       scope.el.querySelector(".post-error-line").textContent = msg;
+
+      if (response && response.quotaExceeded) {
+        setStatus(
+          `글 ${i + 1}/${plan.length}에서 중단: ${msg} (하루 한도이므로 나머지 ${
+            plan.length - i - 1
+          }개는 지금 시도해도 똑같이 실패해 생성을 멈췄습니다)`,
+          true
+        );
+        stoppedByQuota = true;
+        break;
+      }
+
       setStatus(`글 ${i + 1}/${plan.length} 생성 실패 (${msg}) — 나머지는 계속 진행합니다.`, true);
       continue;
     }
@@ -412,19 +454,22 @@ async function handleGenerate() {
 
   generateBtn.disabled = false;
   if (succeeded > 0) document.getElementById("bulkActions").classList.remove("hidden");
-  setStatus(
-    plan.length > 1
-      ? `완료: 글 ${succeeded}/${plan.length}개 생성됨. 발행 전 각각 꼭 검토하세요.`
-      : succeeded > 0
-      ? "완료되었습니다. 발행 전 내용을 꼭 직접 검토하세요."
-      : "생성에 실패했습니다."
-  );
+  if (!stoppedByQuota) {
+    setStatus(
+      plan.length > 1
+        ? `완료: 글 ${succeeded}/${plan.length}개 생성됨. 발행 전 각각 꼭 검토하세요.`
+        : succeeded > 0
+        ? "완료되었습니다. 발행 전 내용을 꼭 직접 검토하세요."
+        : "생성에 실패했습니다."
+    );
+  }
 }
 
 document.addEventListener("DOMContentLoaded", () => {
   loadSettings();
   document.getElementById("saveApiKeyBtn").addEventListener("click", saveApiKey);
   document.getElementById("loadCollectedBtn").addEventListener("click", handleLoadCollected);
+  document.getElementById("loadNaverStoreBtn").addEventListener("click", handleLoadNaverStoreReviews);
   document.getElementById("photosPerPostInput").addEventListener("input", updatePoolStats);
   document.getElementById("generateBtn").addEventListener("click", handleGenerate);
   document.getElementById("downloadAllZipBtn").addEventListener("click", handleDownloadAllZip);

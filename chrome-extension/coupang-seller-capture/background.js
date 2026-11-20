@@ -778,10 +778,18 @@ async function openSellerDealsProductTabsForKeyword(keyword, rocketOnly, perKeyw
 
 const NAVER_REVIEW_PAGE_DELAY_MS = 3000;
 const NAVER_REVIEW_TARGET_PER_SORT = 500;
+// With the photo filter on, the whole point is gathering photos for the
+// blog/Threads tools, so there's no reason to spend half the run on
+// "평점 낮은순" (low-rating-first) — those are mostly complaint text
+// with few/no photos and aren't usable for promotional content anyway.
+// Skip that pass and put its whole budget into the one sort mode that
+// actually yields usable photo reviews (최신순).
+const NAVER_REVIEW_TARGET_PER_SORT_PHOTO_ONLY = 1000;
 const NAVER_SORT_MODES = [
   { label: "최신순", matches: ["최신순"] },
   { label: "평점 낮은순", matches: ["평점낮은순", "평점 낮은순"] },
 ];
+const NAVER_SORT_MODES_PHOTO_ONLY = [{ label: "최신순", matches: ["최신순"] }];
 
 async function getNaverReviewStatus() {
   const { naverReviewStatus } = await chrome.storage.local.get("naverReviewStatus");
@@ -920,7 +928,10 @@ async function startNaverReviewCollection(tabId, photoOnly) {
     }
   }
 
-  for (const sortMode of NAVER_SORT_MODES) {
+  const sortModes = photoOnly ? NAVER_SORT_MODES_PHOTO_ONLY : NAVER_SORT_MODES;
+  const targetPerSort = photoOnly ? NAVER_REVIEW_TARGET_PER_SORT_PHOTO_ONLY : NAVER_REVIEW_TARGET_PER_SORT;
+
+  for (const sortMode of sortModes) {
     if (cancelRequested) break;
     await setNaverReviewStatus({ phase: sortMode.label, collected: 0 });
 
@@ -934,9 +945,9 @@ async function startNaverReviewCollection(tabId, photoOnly) {
 
     let collectedForSort = 0;
     let pageCount = 0;
-    const MAX_PAGES = 60; // safety cap in case pagination never signals "no more"
+    const MAX_PAGES = 120; // safety cap in case pagination never signals "no more"
 
-    while (collectedForSort < NAVER_REVIEW_TARGET_PER_SORT && pageCount < MAX_PAGES && !cancelRequested) {
+    while (collectedForSort < targetPerSort && pageCount < MAX_PAGES && !cancelRequested) {
       let pageReviews = [];
       try {
         const results = await chrome.scripting.executeScript({
@@ -948,7 +959,14 @@ async function startNaverReviewCollection(tabId, photoOnly) {
         break;
       }
 
-      const tagged = pageReviews.map((r) => ({
+      // Blog/Threads promo content shouldn't be built from 1~2-star
+      // complaints — when collecting specifically for that (photoOnly),
+      // drop low-rating reviews here rather than just skipping the
+      // "평점낮은순" sort pass, since a low-rated review can still show
+      // up while sorted by 최신순.
+      const usable = photoOnly ? pageReviews.filter((r) => !r.rating || Number(r.rating) >= 3) : pageReviews;
+
+      const tagged = usable.map((r) => ({
         ...r,
         sortLabel: sortMode.label,
         pageUrl,
@@ -960,7 +978,7 @@ async function startNaverReviewCollection(tabId, photoOnly) {
       const status = await getNaverReviewStatus();
       await setNaverReviewStatus({ collected: collectedForSort, total: status.total + added });
 
-      if (collectedForSort >= NAVER_REVIEW_TARGET_PER_SORT || cancelRequested) break;
+      if (collectedForSort >= targetPerSort || cancelRequested) break;
 
       let hasNext = false;
       try {
@@ -1364,6 +1382,64 @@ ${signatureMenuHint ? `\n[참고: 알려준 시그니처 메뉴] ${signatureMenu
 const GEMINI_RETRYABLE_STATUSES = new Set([503]);
 const GEMINI_RETRY_DELAYS_MS = [2000, 5000];
 
+// A 429 is this request itself tripping a quota, so the earlier
+// "잠시 후 다시 시도" wording was misleading two different cases:
+// a per-minute rate limit (worth a short wait) and a per-DAY quota
+// (Google's own message gives a multi-hour retry delay, e.g.
+// "Please retry in 3h38m49.305274s"). We parse the raw Google error
+// text into a clear, Korean, case-specific message instead of
+// dumping the raw English detail into the UI as-is.
+const QUOTA_EXCEEDED_MARKER = "[일일 한도 초과]";
+
+function describeGeminiRetryDelay(durationText) {
+  const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:([\d.]+)s)?$/.exec(durationText || "");
+  if (!m || (!m[1] && !m[2] && !m[3])) return "";
+  let hours = parseInt(m[1] || "0", 10);
+  let minutes = parseInt(m[2] || "0", 10);
+  const seconds = parseFloat(m[3] || "0");
+  if (seconds >= 30) minutes += 1;
+  if (minutes >= 60) {
+    hours += 1;
+    minutes -= 60;
+  }
+  const bits = [];
+  if (hours > 0) bits.push(`${hours}시간`);
+  if (minutes > 0 || hours === 0) bits.push(`${minutes}분`);
+  return bits.join(" ");
+}
+
+function formatGeminiApiError(status, detail) {
+  if (status !== 429) {
+    return `API 오류 (${status})${detail ? ": " + detail : ""}`;
+  }
+
+  const isDailyQuota = /per day/i.test(detail || "");
+  const retryMatch = /retry in\s+([\dhms.]+)/i.exec(detail || "");
+  const waitText = retryMatch ? describeGeminiRetryDelay(retryMatch[1]) : "";
+  const limitMatch = /limit:\s*(\d+)/i.exec(detail || "");
+  const modelMatch = /model:\s*([\w.-]+)/i.exec(detail || "");
+
+  if (isDailyQuota) {
+    const who = modelMatch ? `모델 "${modelMatch[1]}"의` : "이 모델의";
+    const limitText = limitMatch ? ` (하루 ${limitMatch[1]}회)` : "";
+    const waitSuffix = waitText
+      ? ` 약 ${waitText} 후 다시 시도할 수 있습니다.`
+      : " 보통 자정(태평양 시간 기준) 무렵 초기화됩니다.";
+    return (
+      `${QUOTA_EXCEEDED_MARKER} API 오류 (429): ${who} 무료 티어 일일 호출 한도${limitText}를 모두 사용했습니다.` +
+      `${waitSuffix} 원고 개수를 줄이거나 여러 날에 나눠서 생성해보세요(원고/글 1개당 API 호출 1회입니다).`
+    );
+  }
+
+  return `API 오류 (429): 호출이 너무 몰려 분당 한도를 초과했습니다.${
+    waitText ? ` 약 ${waitText} 후 다시 시도하세요.` : " 잠시 후 다시 시도하세요."
+  }`;
+}
+
+function isGeminiQuotaExceededMessage(message) {
+  return typeof message === "string" && message.indexOf(QUOTA_EXCEEDED_MARKER) === 0;
+}
+
 async function callGeminiForBlogDraft({ apiKey, model, parts }) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
     model
@@ -1387,8 +1463,7 @@ async function callGeminiForBlogDraft({ apiKey, model, parts }) {
       } catch (err) {
         // response body wasn't JSON — leave detail blank
       }
-      const rateLimited = res.status === 429 ? " (무료 티어 호출 한도 초과일 수 있습니다 — 잠시 후 다시 시도하세요)" : "";
-      lastError = new Error(`API 오류 (${res.status})${detail ? ": " + detail : ""}${rateLimited}`);
+      lastError = new Error(formatGeminiApiError(res.status, detail));
 
       if (GEMINI_RETRYABLE_STATUSES.has(res.status) && attempt < GEMINI_RETRY_DELAYS_MS.length) {
         await new Promise((resolve) => setTimeout(resolve, GEMINI_RETRY_DELAYS_MS[attempt]));
@@ -1491,8 +1566,11 @@ async function generateBlogDraft({ storeName, storeArea, storeCategory, signatur
     await setBlogDraftStatus({ running: false, phase: "완료", error: "", result });
     return { ok: true, result };
   } catch (err) {
-    await setBlogDraftStatus({ running: false, phase: "", error: (err && err.message) || "알 수 없는 오류" });
-    return { ok: false, reason: "error", error: (err && err.message) || "알 수 없는 오류" };
+    const rawMessage = (err && err.message) || "알 수 없는 오류";
+    const quotaExceeded = isGeminiQuotaExceededMessage(rawMessage);
+    const message = quotaExceeded ? rawMessage.slice(QUOTA_EXCEEDED_MARKER.length).trim() : rawMessage;
+    await setBlogDraftStatus({ running: false, phase: "", error: message });
+    return { ok: false, reason: "error", error: message, quotaExceeded };
   } finally {
     blogDraftRunning = false;
   }
@@ -1526,7 +1604,16 @@ async function buildThreadsPostParts({ storeName, storeArea, storeCategory, revi
 
   const parts = [
     {
-      text: `당신은 실제 방문 리뷰를 참고해서 쓰레드(Threads)에 올릴 짧은 홍보 게시글을 쓰는 한국어 작성자입니다. 아래는 "${storeName}"(${storeArea}, ${storeCategory})의 실제 리뷰 내용과, 이 글과 함께 올릴 사진 ${photoSlots.length}장입니다. 리뷰에 없는 내용은 지어내지 마세요.
+      text: `당신은 쓰레드(Threads)에서 반응이 좋은 글을 많이 써본 한국어 인플루언서입니다. 지금은 "${storeName}"(${storeArea}, ${storeCategory})을 실제로 다녀온 사람인 척 짧은 홍보 게시글 하나를 씁니다. 아래 [참고 리뷰]는 실제 손님들이 남긴 리뷰이고, 이 글에는 사진 ${photoSlots.length}장도 함께 올라갑니다. 리뷰에 없는 사실(가격, 영업시간, 메뉴 구성 등)은 지어내지 마세요.
+
+[쓰레드 글쓰기 스타일 — 블로그 원고처럼 쓰지 말 것]
+쓰레드는 블로그가 아닙니다. 잘되는 쓰레드 글의 공통점은:
+- 첫 줄이 "오늘은 ~에 다녀왔습니다" 같은 블로그식 도입이 아니라, 바로 훅으로 시작합니다. 감탄사, 단정적인 한 줄 평가, 공감 포인트, 혹은 짧은 질문으로 시작하세요. (예: "이집 진짜 미쳤다", "여기 왜 이제 알았지", "솔직히 기대 안 했는데")
+- 완결된 격식체 문단 하나로 쓰지 말고, 짧은 문장/구 단위로 끊어서 줄바꿈을 자주 넣으세요. 한 줄에 한두 호흡 정도, 전체적으로 스캔하듯 읽히게.
+- 말투는 "~습니다/~였습니다" 같은 격식체 블로그 문체가 아니라, "~임/~함/~인듯/~더라/진짜/완전/찐" 같은 가볍고 친근한 구어체 위주로. 가끔 "ㅋㅋ"나 "...", "!" 같은 구어적 리듬도 자연스럽게.
+- "강추합니다", "꼭 방문해보세요", "분위기도 좋고 맛도 좋았어요" 같은 뻔한 광고 문구·상투어는 쓰지 마세요. 구체적인 디테일(사진에 실제로 보이는 것, 리뷰에 나온 구체적 표현)로 승부하세요.
+- 메뉴 설명을 나열식으로 다 담으려 하지 말고, 가장 인상적인 포인트 1~2개에만 집중하세요 — 쓰레드는 정보 전달이 아니라 "느낌"을 전달하는 포맷입니다.
+- 과한 이모지 도배 없이 1~2개만, 문장 끝이 아니라 자연스러운 자리에.
 
 [참고 리뷰]
 ${reviewBlock}
@@ -1549,10 +1636,10 @@ ${reviewBlock}
 
   parts.push({
     text: `
-다른 설명 없이 아래 JSON 형식으로만 답하세요(마크다운 코드블록 없이 순수 JSON 하나만):
+다른 설명 없이 아래 JSON 형식으로만 답하세요(마크다운 코드블록 없이 순수 JSON 하나만, text 값 안에는 실제 줄바꿈 대신 \\n을 사용):
 
 {
-  "text": "쓰레드에 바로 올릴 수 있는 본문. 1인칭 방문 후기 톤으로 2~4문장, 이모지 1~2개 정도 자연스럽게, 과장 광고 문구 없이, 끝에 해시태그 2~4개(모두 '#단어' 형태, 띄어쓰기 없이)를 포함해서 전체 400자 이내로 작성."
+  "text": "쓰레드에 바로 올릴 수 있는 본문. 위 스타일 가이드를 그대로 따를 것 — 훅으로 시작, 짧은 문장을 \\n으로 끊어서 3~6줄 정도, 구어체, 전체 300자 이내(사진이 글의 절반이니 텍스트는 짧게). 마지막 줄에 해시태그 2~4개(모두 '#단어' 형태, 띄어쓰기 없이, 쉼표 없이 공백으로 구분)."
 }`,
   });
 
@@ -1591,8 +1678,11 @@ async function generateThreadsPost({ storeName, storeArea, storeCategory, review
     await setThreadsPostStatus({ running: false, phase: "완료", error: "", result });
     return { ok: true, result };
   } catch (err) {
-    await setThreadsPostStatus({ running: false, phase: "", error: (err && err.message) || "알 수 없는 오류" });
-    return { ok: false, reason: "error", error: (err && err.message) || "알 수 없는 오류" };
+    const rawMessage = (err && err.message) || "알 수 없는 오류";
+    const quotaExceeded = isGeminiQuotaExceededMessage(rawMessage);
+    const message = quotaExceeded ? rawMessage.slice(QUOTA_EXCEEDED_MARKER.length).trim() : rawMessage;
+    await setThreadsPostStatus({ running: false, phase: "", error: message });
+    return { ok: false, reason: "error", error: message, quotaExceeded };
   } finally {
     threadsPostRunning = false;
   }

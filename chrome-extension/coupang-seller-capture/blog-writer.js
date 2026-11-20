@@ -703,6 +703,7 @@ async function handleGenerate() {
   }
 
   let succeeded = 0;
+  let stoppedByQuota = false;
   for (let i = 0; i < draftCount; i++) {
     const chunkReviewLines = reviewChunks[i];
     let photoSlots = [];
@@ -740,6 +741,18 @@ async function handleGenerate() {
       else if (reason === "no_reviews") msg = "이 구간에 리뷰가 없습니다.";
       else msg = `생성 실패: ${(response && response.error) || "알 수 없는 오류"}`;
       scope.el.querySelector(".error-line").textContent = msg;
+
+      if (response && response.quotaExceeded) {
+        setStatus(
+          `원고 ${i + 1}/${draftCount}에서 중단: ${msg} (하루 한도이므로 나머지 ${
+            draftCount - i - 1
+          }개는 지금 시도해도 똑같이 실패해 생성을 멈췄습니다)`,
+          true
+        );
+        stoppedByQuota = true;
+        break;
+      }
+
       setStatus(`원고 ${i + 1}/${draftCount} 생성 실패 (${msg}) — 나머지는 계속 진행합니다.`, true);
       continue;
     }
@@ -749,13 +762,15 @@ async function handleGenerate() {
   }
 
   generateBtn.disabled = false;
-  setStatus(
-    draftCount > 1
-      ? `완료: 원고 ${succeeded}/${draftCount}개 생성됨. 발행 전 각각 꼭 검토하세요.`
-      : succeeded > 0
-      ? "완료되었습니다. 발행 전 내용을 꼭 직접 검토하세요."
-      : "생성에 실패했습니다."
-  );
+  if (!stoppedByQuota) {
+    setStatus(
+      draftCount > 1
+        ? `완료: 원고 ${succeeded}/${draftCount}개 생성됨. 발행 전 각각 꼭 검토하세요.`
+        : succeeded > 0
+        ? "완료되었습니다. 발행 전 내용을 꼭 직접 검토하세요."
+        : "생성에 실패했습니다."
+    );
+  }
 }
 
 document.addEventListener("DOMContentLoaded", () => {
