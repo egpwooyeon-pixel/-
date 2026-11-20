@@ -148,7 +148,14 @@ function renderChips(containerId, items, className) {
   });
 }
 
+// Holds the most recent generation result so renderPreview() can pull
+// photoSlots/photoCaptions back out after the user edits draftOutput
+// by hand (the textarea only ever holds plain text with [사진 삽입: N]
+// markers — it has nowhere to carry which photo each N refers to).
+let lastResult = null;
+
 function renderResult(result) {
+  lastResult = result;
   document.getElementById("resultCard").classList.remove("hidden");
   renderChips("requiredKeywords", result.requiredKeywords, "required");
   renderChips("goodKeywords", result.goodKeywords, "good");
@@ -182,6 +189,82 @@ function renderResult(result) {
   if (result.parseFailed) {
     setStatus("AI 응답을 정해진 형식으로 해석하지 못해 원문 그대로 표시합니다 — 키워드 분류는 비어 있습니다.", true);
   }
+
+  renderPreview();
+}
+
+// Rebuilds the "블로그용 미리보기" block from whatever is currently in
+// draftOutput (so manual edits are reflected) plus the photo slots/
+// captions from the last generation. "[사진 삽입: N]" markers become a
+// real <figure><img>+caption> in place — this is what makes the
+// preview copy-paste as text-and-images together into a rich text
+// editor like Naver Blog's, rather than just plain text with bracket
+// placeholders.
+function buildPreviewNode(draftText, photoSlots, photoCaptions) {
+  const container = document.createElement("div");
+  const markerPattern = /\[사진\s*삽입\s*:\s*(\d+)\]/g;
+
+  const appendTextBlock = (text) => {
+    text.split(/\n+/).forEach((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      const p = document.createElement("p");
+      p.textContent = trimmed;
+      container.appendChild(p);
+    });
+  };
+
+  let lastIndex = 0;
+  let match;
+  while ((match = markerPattern.exec(draftText))) {
+    appendTextBlock(draftText.slice(lastIndex, match.index));
+    const num = parseInt(match[1], 10);
+    const slot = photoSlots[num - 1];
+    if (slot) {
+      const figure = document.createElement("figure");
+      const img = document.createElement("img");
+      img.src = slot.url;
+      img.alt = `사진 ${num}`;
+      figure.appendChild(img);
+      const caption = photoCaptions[num - 1];
+      if (caption) {
+        const figcaption = document.createElement("figcaption");
+        figcaption.textContent = caption;
+        figure.appendChild(figcaption);
+      }
+      container.appendChild(figure);
+    }
+    lastIndex = markerPattern.lastIndex;
+  }
+  appendTextBlock(draftText.slice(lastIndex));
+
+  return container;
+}
+
+function renderPreview() {
+  const draftText = document.getElementById("draftOutput").value || "";
+  if (!draftText.trim()) {
+    document.getElementById("previewCard").classList.add("hidden");
+    return;
+  }
+  const photoSlots = lastResult && Array.isArray(lastResult.photoSlots) ? lastResult.photoSlots : [];
+  const photoCaptions = lastResult && Array.isArray(lastResult.photoCaptions) ? lastResult.photoCaptions : [];
+  const node = buildPreviewNode(draftText, photoSlots, photoCaptions);
+  const container = document.getElementById("blogPreview");
+  container.innerHTML = "";
+  container.appendChild(node);
+  document.getElementById("previewCard").classList.remove("hidden");
+}
+
+function handleSelectPreview() {
+  const el = document.getElementById("blogPreview");
+  el.focus();
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  setStatus("전체 선택했습니다 — 이제 Ctrl+C(맥: Cmd+C)로 복사한 뒤 블로그 글쓰기 화면에 Ctrl+V로 붙여넣으세요.");
 }
 
 async function handleGenerate() {
@@ -288,4 +371,6 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("includePhotosCheckbox").addEventListener("change", (e) => {
     document.getElementById("photoCountRow").style.display = e.target.checked ? "flex" : "none";
   });
+  document.getElementById("refreshPreviewBtn").addEventListener("click", renderPreview);
+  document.getElementById("selectPreviewBtn").addEventListener("click", handleSelectPreview);
 });

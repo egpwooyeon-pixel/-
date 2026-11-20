@@ -105,6 +105,21 @@
   }
   .photo-guide-item .meta { font-size: 11px; color: #9ca3af; margin-top: 2px; word-break: break-all; }
   .photo-guide-item .caption { font-size: 13px; color: #374151; }
+  .blog-preview {
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 16px;
+    background: #fff;
+    min-height: 120px;
+    max-height: 600px;
+    overflow-y: auto;
+    line-height: 1.8;
+    font-size: 14px;
+  }
+  .blog-preview p { margin: 0 0 14px; }
+  .blog-preview figure { margin: 16px 0; }
+  .blog-preview figure img { max-width: 100%; border-radius: 8px; display: block; }
+  .blog-preview figcaption { font-size: 12px; color: #6b7280; margin-top: 6px; }
 </style>
 </head>
 <body>
@@ -214,6 +229,18 @@
       </div>
       <div id="photoGuideList"></div>
     </div>
+  </div>
+
+  <div class="card hidden" id="previewCard">
+    <h2>6. 블로그용 미리보기 (복사해서 붙여넣기)</h2>
+    <div class="file-hint">
+      아래 내용을 "전체 선택" 버튼으로 선택하고 Ctrl+C(맥: Cmd+C)로 복사한 뒤, 네이버 블로그 글쓰기 화면에 붙여넣으면(Ctrl+V) 텍스트와 사진이 함께 들어갑니다. 완전 자동 발행은 아니지만 사진을 하나씩 끌어넣을 필요가 없어집니다. 붙여넣은 뒤 줄바꿈·사진 크기 등은 블로그 에디터에서 한 번 더 다듬어주세요.
+    </div>
+    <div class="row2" style="margin-bottom:10px;">
+      <button id="refreshPreviewBtn" type="button">미리보기 새로고침 (원고 수정 후 다시 반영)</button>
+      <button id="selectPreviewBtn" type="button" class="primaryBtn">전체 선택하기</button>
+    </div>
+    <div id="blogPreview" class="blog-preview" contenteditable="true"></div>
   </div>
 
   <script src="blog-writer.js"></script>
