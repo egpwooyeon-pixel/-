@@ -1271,7 +1271,7 @@ async function generateBlogDraft({ storeName, storeArea, storeCategory, signatur
 
   try {
     const prompt = buildBlogDraftPrompt({ storeName, storeArea, storeCategory, signatureMenuHint, reviews });
-    const text = await callGeminiForBlogDraft({ apiKey, model: model || "gemini-2.5-flash", prompt });
+    const text = await callGeminiForBlogDraft({ apiKey, model: model || "gemini-3.8-flash", prompt });
     const result = parseBlogDraftResponse(text);
     await setBlogDraftStatus({ running: false, phase: "완료", error: "", result });
     return { ok: true, result };

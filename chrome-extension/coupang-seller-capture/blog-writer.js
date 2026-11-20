@@ -15,7 +15,7 @@ async function loadSettings() {
       "blogSignatureMenu",
     ]);
   document.getElementById("apiKeyInput").value = blogApiKey || "";
-  document.getElementById("modelSelect").value = blogModel || "gemini-2.5-flash";
+  document.getElementById("modelSelect").value = blogModel || "gemini-3.8-flash";
   document.getElementById("storeNameInput").value = blogStoreName || "";
   document.getElementById("storeAreaInput").value = blogStoreArea || "";
   document.getElementById("storeCategoryInput").value = blogStoreCategory || "";
