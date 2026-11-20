@@ -1182,33 +1182,69 @@ async function setBlogDraftStatus(patch) {
   return next;
 }
 
+// Fetches a photo and base64-encodes it as Gemini's inline_data part
+// format. Chunked String.fromCharCode rather than one huge call —
+// a multi-MB image as a single fromCharCode.apply call can blow the
+// function's argument-count limit.
+async function fetchImageInlineData(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`이미지 요청 실패 (${res.status})`);
+  const blob = await res.blob();
+  const buffer = await blob.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  return { mimeType: blob.type || "image/jpeg", data: btoa(binary) };
+}
+
 // photoSlots (optional) is an ordered list the caller already picked
-// from the collected reviews' real photoUrls — this function never
-// sees or needs the image bytes themselves, only which review each
-// slot came from, so Gemini can place natural-sounding markers and
-// write a caption grounded in that review's actual words rather than
-// guessing at image content it was never shown.
-function buildBlogDraftPrompt({ storeName, storeArea, storeCategory, signatureMenuHint, reviews, photoSlots }) {
-  const reviewBlock = reviews.map((r, i) => `${i + 1}. ${r}`).join("\n");
+// from the collected reviews' real photoUrls. First version of this
+// only told Gemini which review each slot came from (text only) and
+// asked it to guess a caption from that — confirmed live that this
+// produces captions that don't match what's actually in the photo
+// (e.g. a soup photo captioned "숯불에 노릇하게 굽기"), since a review
+// with several photos can mention several different dishes in its
+// text with no way to know which photo shows which. This fetches each
+// photo and sends the actual image bytes to Gemini as inline_data
+// parts, interleaved with its slot number and review context, so
+// captions are grounded in what the model actually sees rather than
+// inferred from text alone.
+async function buildBlogDraftParts({ storeName, storeArea, storeCategory, signatureMenuHint, reviews, photoSlots }) {
   const hasPhotos = Array.isArray(photoSlots) && photoSlots.length > 0;
+  const reviewBlock = reviews.map((r, i) => `${i + 1}. ${r}`).join("\n");
 
-  const photoBlock = hasPhotos
-    ? `\n[사진 ${photoSlots.length}장 — 어느 리뷰에서 나온 사진인지와 그 리뷰 내용]\n` +
-      photoSlots
-        .map((p, i) => `사진 ${i + 1}: (별점 ${p.rating || "-"}) ${(p.body || "").slice(0, 80) || "(리뷰 본문 없음)"}`)
-        .join("\n") +
-      `\n`
-    : "";
-
-  const photoInstruction = hasPhotos
-    ? `\n본문 중 자연스러운 위치마다 "[사진 삽입: N]" 마커를 한 줄로 넣어 총 ${photoSlots.length}개(1부터 ${photoSlots.length}까지 모두, 중복·누락 없이)를 본문 흐름에 맞게 배치하세요 — 사진이 많으므로 문단을 그만큼 늘려 자연스럽게 나눠주세요. 그리고 각 사진에 대해, 그 사진이 어느 리뷰에서 나왔는지(위 사진 목록)를 참고해서 블로그에 어울리는 짧은 사진 설명 문구(5~15자 내외, 실제 사진을 보지 않은 상태이므로 "먹음직스러운 한 컷" 같은 리뷰 맥락 기반의 무난한 표현 위주)도 만들어 "photoCaptions" 배열에 순서대로 담으세요.`
-    : "";
-
-  return `당신은 실제 방문 경험을 바탕으로 자연스러운 블로그 후기를 쓰는 한국어 블로거입니다. 아래는 "${storeName}"(${storeArea}, ${storeCategory}) 네이버 플레이스에 달린 실제 영수증리뷰 ${reviews.length}건입니다. 이 리뷰들에 공통적으로 나타나는 표현과 평가만 근거로 사용하세요 — 리뷰에 없는 내용을 지어내지 마세요.
+  const parts = [
+    {
+      text: `당신은 실제 방문 경험을 바탕으로 자연스러운 블로그 후기를 쓰는 한국어 블로거입니다. 아래는 "${storeName}"(${storeArea}, ${storeCategory}) 네이버 플레이스에 달린 실제 영수증리뷰 ${reviews.length}건입니다. 이 리뷰들에 공통적으로 나타나는 표현과 평가만 근거로 사용하세요 — 리뷰에 없는 내용을 지어내지 마세요.
 
 [리뷰 목록]
 ${reviewBlock}
-${signatureMenuHint ? `\n[참고: 알려준 시그니처 메뉴] ${signatureMenuHint}\n` : ""}${photoBlock}
+${signatureMenuHint ? `\n[참고: 알려준 시그니처 메뉴] ${signatureMenuHint}\n` : ""}`,
+    },
+  ];
+
+  if (hasPhotos) {
+    parts.push({
+      text: `\n아래에 사진 ${photoSlots.length}장이 번호 순서(1~${photoSlots.length})대로 첨부되어 있습니다. 각 사진 앞의 텍스트는 그 사진이 달린 리뷰의 평점/본문 일부로, 참고용일 뿐입니다 — 설명 문구는 반드시 그 사진에 실제로 보이는 내용(음식 종류, 플레이팅, 분위기 등)을 바탕으로 작성하세요.\n`,
+    });
+    for (let i = 0; i < photoSlots.length; i++) {
+      const slot = photoSlots[i];
+      parts.push({
+        text: `사진 ${i + 1} (별점 ${slot.rating || "-"}, 리뷰: ${(slot.body || "").slice(0, 60) || "본문 없음"}):`,
+      });
+      try {
+        parts.push({ inlineData: await fetchImageInlineData(slot.url) });
+      } catch (err) {
+        parts.push({ text: "(이 사진은 불러오지 못했습니다 — 리뷰 내용만 참고해 무난하게 작성)" });
+      }
+    }
+  }
+
+  parts.push({
+    text: `
 다음 작업을 수행하고, 다른 설명 없이 아래 JSON 형식으로만 답하세요(마크다운 코드블록 없이 순수 JSON 하나만):
 
 {
@@ -1216,14 +1252,21 @@ ${signatureMenuHint ? `\n[참고: 알려준 시그니처 메뉴] ${signatureMenu
   "goodKeywords": ["리뷰에서 반복적으로 나타나는 긍정 표현(분위기, 가성비, 친절, 웨이팅 등) 3~6개"],
   "signatureMenu": ["리뷰에 자주 언급된 구체적 메뉴/음식 이름 1~5개"],
   "draft": "실제 1인칭 방문 후기 톤의 블로그 본문 전체 텍스트.${
-    hasPhotos ? " 사진이 많으니 1500~2500자 내외로, 문단을 충분히 나누고 각 문단 사이에 [사진 삽입: N] 마커를 넣어서 작성." : " 800~1200자 내외."
+    hasPhotos
+      ? ` 사진이 많으니 1500~2500자 내외로, 문단을 충분히 나누고 각 문단 사이에 [사진 삽입: N] 마커를 한 줄로 넣어 총 ${photoSlots.length}개(1부터 ${photoSlots.length}까지 모두, 중복·누락 없이)를 사진 순서(위 첨부 순서)와 맞춰 배치.`
+      : " 800~1200자 내외."
   } 과장 광고 문구 없이 자연스럽게 위 키워드들을 녹여서 작성. 리뷰에 단점/주의사항(예: 웨이팅, 협소한 주차)이 보이면 1개 정도 솔직하게 포함."${
-    hasPhotos ? `,\n  "photoCaptions": ["사진 1부터 ${photoSlots.length}까지 순서대로, 각 사진의 짧은 설명 문구 ${photoSlots.length}개"]` : ""
-  }
-}${photoInstruction}`;
+      hasPhotos
+        ? `,\n  "photoCaptions": ["사진 1부터 ${photoSlots.length}까지 순서대로, 각 사진에 실제로 보이는 내용을 바탕으로 한 짧은 설명 문구(5~15자 내외) ${photoSlots.length}개"]`
+        : ""
+    }
+}`,
+  });
+
+  return parts;
 }
 
-async function callGeminiForBlogDraft({ apiKey, model, prompt }) {
+async function callGeminiForBlogDraft({ apiKey, model, parts }) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
     model
   )}:generateContent?key=${encodeURIComponent(apiKey)}`;
@@ -1232,7 +1275,7 @@ async function callGeminiForBlogDraft({ apiKey, model, prompt }) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
+      contents: [{ parts }],
     }),
   });
 
@@ -1301,11 +1344,17 @@ async function generateBlogDraft({ storeName, storeArea, storeCategory, signatur
   if (!Array.isArray(reviews) || reviews.length === 0) return { ok: false, reason: "no_reviews" };
 
   blogDraftRunning = true;
-  await setBlogDraftStatus({ running: true, phase: "AI 분석 중", error: "", result: null });
+  await setBlogDraftStatus({
+    running: true,
+    phase: Array.isArray(photoSlots) && photoSlots.length > 0 ? "사진 불러오는 중" : "AI 분석 중",
+    error: "",
+    result: null,
+  });
 
   try {
-    const prompt = buildBlogDraftPrompt({ storeName, storeArea, storeCategory, signatureMenuHint, reviews, photoSlots });
-    const text = await callGeminiForBlogDraft({ apiKey, model: model || "gemini-3.8-flash", prompt });
+    const parts = await buildBlogDraftParts({ storeName, storeArea, storeCategory, signatureMenuHint, reviews, photoSlots });
+    await setBlogDraftStatus({ phase: "AI 분석 중" });
+    const text = await callGeminiForBlogDraft({ apiKey, model: model || "gemini-3.8-flash", parts });
     const result = parseBlogDraftResponse(text, photoSlots);
     result.photoSlots = Array.isArray(photoSlots) ? photoSlots : [];
     await setBlogDraftStatus({ running: false, phase: "완료", error: "", result });
