@@ -220,7 +220,11 @@
     </div>
     <label style="margin-top:8px;">블로그 원고 (수정 가능, 본문 중 "[사진 삽입: N]"은 아래 사진 배치 가이드의 N번 사진을 끼워 넣을 자리입니다)</label>
     <textarea id="draftOutput" rows="14"></textarea>
-    <button id="copyDraftBtn">클립보드에 복사</button>
+    <div class="row2" style="margin-bottom:0;">
+      <button id="copyDraftBtn">클립보드에 복사</button>
+      <button id="downloadZipBtn" type="button">원고+사진 ZIP 다운로드</button>
+    </div>
+    <div id="downloadZipStatus" class="file-hint" style="margin-top:4px;"></div>
 
     <div id="photoGuideSection" class="hidden" style="margin-top:16px;">
       <label>사진 배치 가이드</label>
@@ -243,6 +247,7 @@
     <div id="blogPreview" class="blog-preview" contenteditable="true"></div>
   </div>
 
+  <script src="lib/jszip.min.js"></script>
   <script src="blog-writer.js"></script>
 </body>
 </html>

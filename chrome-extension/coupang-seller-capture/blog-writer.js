@@ -116,13 +116,23 @@ function selectPhotoSlots(reviews, targetCount) {
   return selected;
 }
 
+function photoSlotExt(slot) {
+  const extMatch = slot.url.match(/\.(jpg|jpeg|png|webp|gif)(?:[?&]|$)/i);
+  return extMatch ? extMatch[1].toLowerCase() : "jpg";
+}
+
+// Matches startPlacePhotoDownload's naming in background.js, so a file
+// a user already has from "리뷰 사진 전체 다운로드" and one that comes
+// out of the ZIP below share the same basename.
+function photoSlotBasename(slot) {
+  return `${String(slot.reviewIndex + 1).padStart(3, "0")}_${sanitizeForFilename(slot.nickname) || "익명"}_${
+    slot.photoIndex + 1
+  }.${photoSlotExt(slot)}`;
+}
+
 function photoSlotFilename(slot) {
   const folder = sanitizeForFilename(slot.placeName) || "플레이스";
-  const extMatch = slot.url.match(/\.(jpg|jpeg|png|webp|gif)(?:[?&]|$)/i);
-  const ext = extMatch ? extMatch[1].toLowerCase() : "jpg";
-  return `네이버플레이스사진/${folder}/${String(slot.reviewIndex + 1).padStart(3, "0")}_${
-    sanitizeForFilename(slot.nickname) || "익명"
-  }_${slot.photoIndex + 1}.${ext}`;
+  return `네이버플레이스사진/${folder}/${photoSlotBasename(slot)}`;
 }
 
 function parseReviewsInput() {
@@ -362,12 +372,89 @@ async function handleCopyDraft() {
   }
 }
 
+// Builds one zip containing 블로그원고.txt (the draft, with each
+// "[사진 삽입: N]" marker rewritten in place to name the exact photo
+// file it refers to — so reading the txt next to the extracted photos
+// is enough, no separate guide needed) plus every referenced photo
+// under that same filename. Runs entirely in this tab (not the
+// background service worker) since, unlike the earlier per-photo
+// downloader, there's nothing here that needs to survive the popup
+// closing — this page stays open for as long as the zip takes to
+// build.
+async function handleDownloadZip() {
+  const draftText = document.getElementById("draftOutput").value || "";
+  if (!draftText.trim()) {
+    setStatus("먼저 원고를 생성하세요.", true);
+    return;
+  }
+
+  const photoSlots = lastResult && Array.isArray(lastResult.photoSlots) ? lastResult.photoSlots : [];
+  const photoCaptions = lastResult && Array.isArray(lastResult.photoCaptions) ? lastResult.photoCaptions : [];
+  const storeName = document.getElementById("storeNameInput").value.trim();
+  const statusEl = document.getElementById("downloadZipStatus");
+  const btn = document.getElementById("downloadZipBtn");
+
+  btn.disabled = true;
+  statusEl.textContent = photoSlots.length > 0 ? `사진 ${photoSlots.length}장 내려받는 중...` : "압축 파일 만드는 중...";
+
+  try {
+    const zip = new JSZip();
+
+    const txtBody = draftText.replace(/\[사진\s*삽입\s*:\s*(\d+)\]/g, (whole, numStr) => {
+      const num = parseInt(numStr, 10);
+      const slot = photoSlots[num - 1];
+      if (!slot) return whole;
+      const caption = photoCaptions[num - 1];
+      return `[사진: ${photoSlotBasename(slot)}${caption ? ` — ${caption}` : ""}]`;
+    });
+    zip.file("블로그원고.txt", "﻿" + txtBody);
+
+    let failed = 0;
+    for (let i = 0; i < photoSlots.length; i++) {
+      const slot = photoSlots[i];
+      try {
+        const res = await fetch(slot.url);
+        if (!res.ok) throw new Error(String(res.status));
+        const blob = await res.blob();
+        zip.file(photoSlotBasename(slot), blob);
+      } catch (err) {
+        failed++;
+      }
+      statusEl.textContent = `사진 내려받는 중... (${i + 1} / ${photoSlots.length}${failed ? `, 실패 ${failed}` : ""})`;
+    }
+
+    statusEl.textContent = "압축 파일 만드는 중...";
+    const zipBlob = await zip.generateAsync({ type: "blob" });
+    const url = URL.createObjectURL(zipBlob);
+    const dateStr = new Date()
+      .toISOString()
+      .slice(0, 10)
+      .replace(/-/g, "");
+    const zipFilename = `${sanitizeForFilename(storeName) || "블로그원고"}_${dateStr}.zip`;
+
+    await chrome.downloads.download({ url, filename: zipFilename, saveAs: true });
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+
+    statusEl.textContent =
+      failed > 0
+        ? `ZIP 다운로드를 시작했습니다 (사진 ${photoSlots.length - failed}/${photoSlots.length}장 포함, ${failed}장은 가져오지 못했습니다).`
+        : photoSlots.length > 0
+        ? `ZIP 다운로드를 시작했습니다 (사진 ${photoSlots.length}장 포함).`
+        : "ZIP 다운로드를 시작했습니다 (원고 텍스트만 포함 — 사진 옵션을 쓰지 않았습니다).";
+  } catch (err) {
+    statusEl.textContent = `ZIP 생성 실패: ${(err && err.message) || "알 수 없는 오류"}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   loadSettings();
   document.getElementById("saveApiKeyBtn").addEventListener("click", saveApiKey);
   document.getElementById("loadCollectedBtn").addEventListener("click", handleLoadCollected);
   document.getElementById("generateBtn").addEventListener("click", handleGenerate);
   document.getElementById("copyDraftBtn").addEventListener("click", handleCopyDraft);
+  document.getElementById("downloadZipBtn").addEventListener("click", handleDownloadZip);
   document.getElementById("includePhotosCheckbox").addEventListener("change", (e) => {
     document.getElementById("photoCountRow").style.display = e.target.checked ? "flex" : "none";
   });
