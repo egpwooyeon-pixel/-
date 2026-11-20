@@ -852,12 +852,35 @@ async function setNaverSortWithRetry(tabId, matches) {
   return false;
 }
 
+// Same retry shape as setNaverSortWithRetry above, for the "포토/동영상"
+// filter — clickNaverPhotoVideoFilter (shared.js) opens a panel on its
+// first call (returning reason:"opened_menu") rather than applying the
+// filter directly, so this needs the same "try, wait, try again" loop.
+async function setNaverPhotoVideoFilterWithRetry(tabId) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let result;
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: clickNaverPhotoVideoFilter,
+      });
+      result = results && results[0] && results[0].result;
+    } catch (err) {
+      return false;
+    }
+    if (result && result.ok) return true;
+    if (!result || result.reason !== "opened_menu") return false;
+    await delay(800);
+  }
+  return false;
+}
+
 // Collects up to NAVER_REVIEW_TARGET_PER_SORT reviews for each sort
 // mode in NAVER_SORT_MODES, on the given tab (must already be a Naver
 // product page with its review section visible/open). Clears any
 // previously collected reviews at the start of each run — this is
 // "give me a fresh 최신순 500 + 평점낮은순 500", not an accumulating log.
-async function startNaverReviewCollection(tabId) {
+async function startNaverReviewCollection(tabId, photoOnly) {
   isRunning = true;
   cancelRequested = false;
   stopReason = "";
@@ -879,6 +902,22 @@ async function startNaverReviewCollection(tabId) {
     pageUrl = tab.url || "";
   } catch (err) {
     // ignore; pageUrl stays blank
+  }
+
+  // Applied once, before any sort mode — the "포토/동영상" type filter
+  // and the 정렬(sort) control are independent axes in this UI, so
+  // switching sort afterward doesn't need the type filter re-applied.
+  // Best-effort: if the filter control can't be found, collection
+  // still proceeds (unfiltered) rather than aborting outright — same
+  // "skip and continue" philosophy as a missing sort button below.
+  if (photoOnly) {
+    await setNaverReviewStatus({ phase: "포토/동영상 필터 적용 중" });
+    const filterOk = await setNaverPhotoVideoFilterWithRetry(tabId);
+    if (!filterOk) {
+      await setNaverReviewStatus({ error: '"포토/동영상" 필터 버튼을 찾지 못해 전체 리뷰로 진행합니다' });
+    } else {
+      await delayWithJitter(1200);
+    }
   }
 
   for (const sortMode of NAVER_SORT_MODES) {
@@ -1918,7 +1957,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, reason: "already_running" });
       return false;
     }
-    startNaverReviewCollection(message.tabId);
+    startNaverReviewCollection(message.tabId, !!message.photoOnly);
     sendResponse({ ok: true });
     return false;
   }

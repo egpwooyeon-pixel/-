@@ -326,6 +326,12 @@
   <hr />
   <div class="section-title">네이버 스토어 리뷰 수집 (베타)</div>
   <div class="section-desc">네이버 스마트스토어/브랜드스토어 상품페이지를 열고 리뷰 영역까지 스크롤해서 리뷰 목록이 보이는 상태로 만든 뒤 사용하세요. <b>최신순 500개 + 평점낮은순 500개</b>를 순서대로 모읍니다(둘 다 모을 대상이 없으면 그보다 적게 모일 수 있습니다). 실제 네이버 페이지에서 아직 충분히 검증되지 않은 베타 기능이라, 정렬/다음 버튼을 못 찾으면 조용히 건너뜁니다 — 진행 메시지를 확인해주세요.</div>
+  <div class="section-desc" style="margin-top:-4px;">
+    <label style="display:inline-flex;align-items:center;gap:6px;">
+      <input type="checkbox" id="naverReviewPhotoOnlyCheckbox" style="width:auto;margin:0;" />
+      "포토/동영상" 필터를 먼저 적용해서 사진 있는 리뷰만 수집 (사진 URL도 함께 저장 — 블로그/쓰레드 원고 도구에서 사용)
+    </label>
+  </div>
   <button id="naverReviewStartBtn">리뷰 수집 시작</button>
   <div class="row-buttons">
     <button id="naverReviewStopBtn">중지</button>

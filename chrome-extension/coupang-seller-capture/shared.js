@@ -467,6 +467,35 @@ function clickNaverSortOption(labelCandidates) {
   return { ok: false, reason: "sort_control_not_found" };
 }
 
+// Same `role="radio"` pattern as clickNaverSortOption
+// (`data-shp-contents-type="리뷰타입필터"`, `data-shp-contents-id="포토/동영상"`,
+// confirmed real markup) for the "포토/동영상만 보기" filter — but unlike
+// sort, this option isn't visible until a separate opener button is
+// clicked first (`data-shp-area-id="ftfilteropen"`, also confirmed
+// real markup; its own aria-haspopup="true"/aria-expanded="false" is
+// what shows it only opens a panel rather than being the filter
+// itself). Clicking the opener and the radio option in the same call
+// would race the panel's render, so this returns `{ reason:
+// "opened_menu" }` after only opening it — mirroring
+// setNaverSortWithRetry's contract in background.js — and the caller
+// is expected to wait briefly and call again.
+function clickNaverPhotoVideoFilter() {
+  const option = document.querySelector('[data-shp-contents-type="리뷰타입필터"][data-shp-contents-id="포토/동영상"]');
+  if (option) {
+    if (option.getAttribute("aria-checked") === "true") return { ok: true, already: true };
+    option.click();
+    return { ok: true };
+  }
+
+  const openBtn = document.querySelector('[data-shp-area-id="ftfilteropen"]');
+  if (openBtn) {
+    openBtn.click();
+    return { ok: false, reason: "opened_menu" };
+  }
+
+  return { ok: false, reason: "filter_not_found" };
+}
+
 // Loads more reviews. Confirmed (by the user, live) that this review
 // list uses infinite scroll rather than a "다음"/"더보기" button. The
 // first version of this only scrolled the last card into view plus a
@@ -570,6 +599,22 @@ function extractVisibleNaverReviews() {
     const optionEl = card.querySelector('[id^="review_option_"]');
     const option = optionEl ? norm(optionEl) : "";
 
+    // Each attached photo is a sibling pair inside one wrapper: the
+    // real <img> (already carries a populated src — unlike the Naver
+    // Place photos, there's no lazyload-wrapper timing issue here) and
+    // an "이미지 펼치기" (expand) overlay link that happens to be the
+    // thing data-shp-area-id="reviewattach" is actually on — confirmed
+    // from a real attachment's outerHTML. So this still anchors on
+    // that same attribute (same as the photoCount-only version before
+    // it), but now reads the <img> next to it instead of just counting
+    // matches.
+    const photoUrls = Array.from(card.querySelectorAll('a[data-shp-area-id="reviewattach"]'))
+      .map((a) => {
+        const img = a.parentElement ? a.parentElement.querySelector("img") : null;
+        return img ? img.getAttribute("src") || img.getAttribute("data-src") || "" : "";
+      })
+      .filter(Boolean);
+
     return {
       reviewId,
       reviewerId,
@@ -578,7 +623,8 @@ function extractVisibleNaverReviews() {
       option,
       body,
       isBest: false,
-      photoCount: card.querySelectorAll('a[data-shp-area-id="reviewattach"]').length,
+      photoCount: photoUrls.length,
+      photoUrls,
     };
   });
 }

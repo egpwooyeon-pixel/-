@@ -199,6 +199,7 @@ const NAVER_REVIEW_CSV_COLUMNS = [
   { key: "option", header: "구매옵션" },
   { key: "body", header: "리뷰내용" },
   { key: "photoCount", header: "첨부사진수" },
+  { key: "photoUrlsJoined", header: "사진URL" },
   { key: "reviewId", header: "리뷰ID" },
   { key: "pageUrl", header: "상품 URL" },
   { key: "capturedAt", header: "캡처일시" },
@@ -206,7 +207,10 @@ const NAVER_REVIEW_CSV_COLUMNS = [
 
 function buildNaverReviewCsv(reviews) {
   const header = NAVER_REVIEW_CSV_COLUMNS.map((c) => csvEscape(c.header)).join(",");
-  const rows = reviews.map((r) => NAVER_REVIEW_CSV_COLUMNS.map((c) => csvEscape(r[c.key])).join(","));
+  const rows = reviews.map((r) => {
+    const row = { ...r, photoUrlsJoined: (Array.isArray(r.photoUrls) ? r.photoUrls : []).join(" | ") };
+    return NAVER_REVIEW_CSV_COLUMNS.map((c) => csvEscape(row[c.key])).join(",");
+  });
   return [header, ...rows].join("\r\n");
 }
 
@@ -221,14 +225,16 @@ async function handleNaverReviewStart() {
     return;
   }
 
+  const photoOnly = document.getElementById("naverReviewPhotoOnlyCheckbox").checked;
   const ok = window.confirm(
     `현재 탭에서 리뷰를 "최신순" 500개, "평점 낮은순" 500개 순서대로 모읍니다.\n` +
+      (photoOnly ? `먼저 "포토/동영상" 필터를 적용해서 사진 있는 리뷰만 모읍니다.\n` : "") +
       `페이지 사이 약 3초씩 쉬면서 진행하며, 리뷰 영역이 화면에 보이는 상태여야 정렬/다음 버튼을 찾을 수 있습니다.\n` +
       `아직 실제 사이트에서 충분히 검증되지 않은 베타 기능이라 일부 상품에서 동작하지 않을 수 있습니다.\n시작할까요?`
   );
   if (!ok) return;
 
-  const response = await chrome.runtime.sendMessage({ type: "START_NAVER_REVIEW_COLLECTION", tabId: tab.id });
+  const response = await chrome.runtime.sendMessage({ type: "START_NAVER_REVIEW_COLLECTION", tabId: tab.id, photoOnly });
   if (response && response.ok === false) {
     setStatus("이미 다른 작업이 진행 중입니다.", "error");
     return;

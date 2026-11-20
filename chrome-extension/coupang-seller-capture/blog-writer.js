@@ -72,6 +72,43 @@ async function handleLoadCollected() {
   statusEl.textContent = `${lines.length}건을 불러왔습니다 (사진 ${photoCount}장 포함) — 필요하면 직접 수정/삭제 후 생성하세요.`;
 }
 
+// Naver 스토어 리뷰(naverReviews, "네이버 스토어 리뷰 수집" 기능이 모은 것)는
+// 플레이스 리뷰와 필드 이름이 다르다 — nickname 대신 reviewerId, placeName/
+// keywordTags는 아예 없음 — 그래서 selectPhotoSlots/buildThreadsPostPlan 등
+// 플레이스 리뷰 모양을 기대하는 나머지 코드가 그대로 쓸 수 있게 여기서
+// 같은 모양으로 맞춰(normalize) lastLoadedReviews에 넣는다. 상호명은 이
+// 리뷰에 상품명이 안 들어있어서 자동으로는 못 채운다 — 직접 입력해야 한다.
+async function handleLoadNaverStoreReviews() {
+  const { naverReviews } = await chrome.storage.local.get("naverReviews");
+  const reviews = Array.isArray(naverReviews) ? naverReviews : [];
+  const statusEl = document.getElementById("loadCollectedStatus");
+  if (reviews.length === 0) {
+    statusEl.textContent = "수집된 스마트스토어 리뷰가 없습니다 — 먼저 확장프로그램 팝업에서 리뷰 수집을 실행하세요.";
+    return;
+  }
+
+  const normalized = reviews.map((r) => ({
+    nickname: r.reviewerId || "",
+    body: r.body || "",
+    rating: r.rating || "",
+    keywordTags: "",
+    placeName: "",
+    photoUrls: Array.isArray(r.photoUrls) ? r.photoUrls : [],
+  }));
+  lastLoadedReviews = normalized;
+
+  const lines = normalized
+    .filter((r) => r.body && r.body.trim())
+    .map((r) => {
+      const flatBody = r.body.replace(/\s*\n\s*/g, " ").trim();
+      const ratingPart = r.rating ? `[${r.rating}점] ` : "";
+      return `${ratingPart}${flatBody}`;
+    });
+  document.getElementById("reviewsInput").value = lines.join("\n");
+  const photoCount = normalized.reduce((sum, r) => sum + r.photoUrls.length, 0);
+  statusEl.textContent = `${lines.length}건을 불러왔습니다 (사진 ${photoCount}장 포함) — 상품명(상호명)은 자동으로 못 채우니 직접 입력하세요. 필요하면 리뷰도 직접 수정/삭제 후 생성하세요.`;
+}
+
 function sanitizeForFilename(s) {
   return (s || "").replace(/[\\/:*?"<>|]/g, "_").trim();
 }
@@ -725,6 +762,7 @@ document.addEventListener("DOMContentLoaded", () => {
   loadSettings();
   document.getElementById("saveApiKeyBtn").addEventListener("click", saveApiKey);
   document.getElementById("loadCollectedBtn").addEventListener("click", handleLoadCollected);
+  document.getElementById("loadNaverStoreBtn").addEventListener("click", handleLoadNaverStoreReviews);
   document.getElementById("generateBtn").addEventListener("click", handleGenerate);
   document.getElementById("includePhotosCheckbox").addEventListener("change", (e) => {
     document.getElementById("photoCountRow").style.display = e.target.checked ? "flex" : "none";
