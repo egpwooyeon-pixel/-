@@ -980,16 +980,41 @@ async function startNaverReviewCollection(tabId, photoOnly) {
 
       if (collectedForSort >= targetPerSort || cancelRequested) break;
 
+      // loadMoreNaverReviews already spends up to ~40s internally
+      // retrying before it reports no growth, but a real person
+      // scrolling never actually "gives up" after one stall — they
+      // just keep scrolling. A single ok:false here used to end the
+      // whole sort pass immediately, which turned out to be the real
+      // reason collection plateaued at a few dozen reviews on a page
+      // with thousands available even though the user confirmed manual
+      // scrolling kept loading more: one transient stall (a slow
+      // batch, a render hiccup) was being read as "list exhausted".
+      // Require several CONSECUTIVE failures — each with its own full
+      // internal retry budget — before concluding the list is actually
+      // done.
       let hasNext = false;
-      try {
-        const nextResults = await chrome.scripting.executeScript({
-          target: { tabId },
-          func: loadMoreNaverReviews,
-        });
-        hasNext = !!(nextResults && nextResults[0] && nextResults[0].result && nextResults[0].result.ok);
-      } catch (err) {
-        hasNext = false;
+      let consecutiveNoGrowth = 0;
+      const MAX_CONSECUTIVE_NO_GROWTH = 5;
+      while (!hasNext && consecutiveNoGrowth < MAX_CONSECUTIVE_NO_GROWTH && !cancelRequested) {
+        try {
+          const nextResults = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: loadMoreNaverReviews,
+          });
+          hasNext = !!(nextResults && nextResults[0] && nextResults[0].result && nextResults[0].result.ok);
+        } catch (err) {
+          hasNext = false;
+        }
+        if (hasNext) break;
+        consecutiveNoGrowth++;
+        if (consecutiveNoGrowth < MAX_CONSECUTIVE_NO_GROWTH) {
+          await setNaverReviewStatus({
+            phase: `${sortMode.label} (더 불러오는 중 — 재시도 ${consecutiveNoGrowth}/${MAX_CONSECUTIVE_NO_GROWTH - 1})`,
+          });
+          await delayWithJitter(4000);
+        }
       }
+      await setNaverReviewStatus({ phase: sortMode.label });
       if (!hasNext) break;
 
       pageCount++;
