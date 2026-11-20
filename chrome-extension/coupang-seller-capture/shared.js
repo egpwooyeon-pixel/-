@@ -671,6 +671,13 @@ function extractVisiblePlaceReviews() {
     const visitCount = infoSpans[1] ? infoSpans[1].textContent.trim() : "";
     const authMethod = infoSpans[2] ? ownText(infoSpans[2]) : "";
 
+    // Photo (and video-thumbnail) <img> src values are real,
+    // directly-fetchable pup-review-phinf.pstatic.net URLs already
+    // present in the DOM — no click/expand needed to read them.
+    const photoUrls = Array.from(card.querySelectorAll("a.place_thumb img"))
+      .map((img) => img.getAttribute("src") || "")
+      .filter(Boolean);
+
     return {
       nickname,
       userId,
@@ -681,7 +688,12 @@ function extractVisiblePlaceReviews() {
       date,
       visitCount,
       authMethod,
-      photoCount: card.querySelectorAll("a.place_thumb").length,
+      photoCount: photoUrls.length,
+      photoUrls,
+      // Captured per-review (not just once) since this function must
+      // stay fully self-contained to run via chrome.scripting.executeScript
+      // — cheap to repeat, and keeps every row usable on its own.
+      placeName: (document.title || "").replace(/\s*-\s*네이버\s*지도\s*$/, "").trim(),
     };
   });
 }

@@ -302,6 +302,7 @@ const PLACE_REVIEW_CSV_COLUMNS = [
   { key: "keywordTags", header: "키워드태그" },
   { key: "body", header: "리뷰내용" },
   { key: "photoCount", header: "첨부사진수" },
+  { key: "photoUrlsJoined", header: "사진URL" },
   { key: "userId", header: "작성자ID" },
   { key: "pageUrl", header: "플레이스 URL" },
   { key: "capturedAt", header: "캡처일시" },
@@ -309,7 +310,10 @@ const PLACE_REVIEW_CSV_COLUMNS = [
 
 function buildPlaceReviewCsv(reviews) {
   const header = PLACE_REVIEW_CSV_COLUMNS.map((c) => csvEscape(c.header)).join(",");
-  const rows = reviews.map((r) => PLACE_REVIEW_CSV_COLUMNS.map((c) => csvEscape(r[c.key])).join(","));
+  const rows = reviews.map((r) => {
+    const row = { ...r, photoUrlsJoined: (Array.isArray(r.photoUrls) ? r.photoUrls : []).join(" | ") };
+    return PLACE_REVIEW_CSV_COLUMNS.map((c) => csvEscape(row[c.key])).join(",");
+  });
   return [header, ...rows].join("\r\n");
 }
 
@@ -366,6 +370,67 @@ async function handlePlaceReviewDownload() {
   } catch (err) {
     setStatus("다운로드에 실패했습니다.", "error");
   }
+}
+
+function sanitizeForFilename(s) {
+  return (s || "").replace(/[\\/:*?"<>|]/g, "_").trim();
+}
+
+// Downloads every photo attached to the collected reviews, one file
+// at a time with a short pause between each (chrome.downloads.download
+// itself doesn't need that, but spacing them out keeps this from
+// firing dozens of requests at pstatic.net in the same instant). Each
+// review's photos go under 네이버플레이스사진/<업체명>/<리뷰번호>_<작성자>_<사진번호>.<확장자>
+// in the browser's normal downloads folder; failures on individual
+// photos are skipped rather than aborting the whole batch, since a
+// dead image URL shouldn't block the rest.
+async function handlePlaceReviewPhotosDownload() {
+  const { placeReviews } = await chrome.storage.local.get("placeReviews");
+  const reviews = Array.isArray(placeReviews) ? placeReviews : [];
+
+  const jobs = [];
+  reviews.forEach((r, reviewIndex) => {
+    const urls = Array.isArray(r.photoUrls) ? r.photoUrls : [];
+    urls.forEach((url, photoIndex) => {
+      jobs.push({ url, reviewIndex, photoIndex, nickname: r.nickname, placeName: r.placeName });
+    });
+  });
+
+  if (jobs.length === 0) {
+    setStatus("다운로드할 사진이 없습니다. 먼저 리뷰를 수집하세요.", "error");
+    return;
+  }
+
+  const ok = window.confirm(
+    `사진 ${jobs.length}장을 다운로드합니다 (브라우저 다운로드 폴더 안 "네이버플레이스사진" 폴더에 저장됩니다).\n` +
+      `※ 리뷰 작성자가 올린 사진입니다 — 블로그 등에 그대로 재사용하려면 저작권상 원작성자의 허락이 필요할 수 있습니다.\n계속할까요?`
+  );
+  if (!ok) return;
+
+  const folder = sanitizeForFilename(jobs[0].placeName) || "플레이스";
+  let done = 0;
+  let failed = 0;
+
+  for (const job of jobs) {
+    const extMatch = job.url.match(/\.(jpg|jpeg|png|webp|gif)(?:[?&]|$)/i);
+    const ext = extMatch ? extMatch[1].toLowerCase() : "jpg";
+    const filename = `네이버플레이스사진/${folder}/${String(job.reviewIndex + 1).padStart(3, "0")}_${
+      sanitizeForFilename(job.nickname) || "익명"
+    }_${job.photoIndex + 1}.${ext}`;
+
+    try {
+      await chrome.downloads.download({ url: job.url, filename, saveAs: false });
+    } catch (err) {
+      failed++;
+    }
+    done++;
+    if (done % 5 === 0 || done === jobs.length) {
+      setStatus(`사진 다운로드 중... (${done} / ${jobs.length}${failed ? `, 실패 ${failed}` : ""})`, "");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+
+  setStatus(`사진 다운로드 완료: ${jobs.length - failed}장 (실패 ${failed}장)`, failed ? "error" : "ok");
 }
 
 async function renderPlaceReviewStatus() {
@@ -896,6 +961,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("placeReviewStartBtn").addEventListener("click", handlePlaceReviewStart);
   document.getElementById("placeReviewStopBtn").addEventListener("click", handlePlaceReviewStop);
   document.getElementById("placeReviewDownloadBtn").addEventListener("click", handlePlaceReviewDownload);
+  document.getElementById("placeReviewPhotosDownloadBtn").addEventListener("click", handlePlaceReviewPhotosDownload);
   document.getElementById("openBlogWriterBtn").addEventListener("click", () => {
     chrome.tabs.create({ url: chrome.runtime.getURL("blog-writer.html") });
   });
