@@ -1048,9 +1048,20 @@ async function startPlaceReviewCollection(tabId) {
         target: { tabId, allFrames: true },
         func: loadMorePlaceReviews,
       });
-      const result = (nextResults || []).map((r) => r && r.result).find(Boolean);
-      hasNext = !!(result && result.ok);
-      if (result && typeof result.after === "number") cardCount = Math.max(cardCount, result.after);
+      // allFrames:true runs this in every frame on the page, including
+      // ones with nothing to do with reviews (ad/map-tile iframes) —
+      // those always come back {ok:false, before:0, after:0}. Picking
+      // just the first truthy result (an earlier version of this did)
+      // can grab one of those instead of the frame that actually has
+      // the review list, making a perfectly normal page look like "no
+      // reviews found". Aggregate across all frames instead: hasNext
+      // is true if ANY frame succeeded, and cardCount takes the
+      // largest `after` seen (the real review frame's), not whichever
+      // frame happened to run first.
+      const frameResults = (nextResults || []).map((r) => r && r.result).filter(Boolean);
+      hasNext = frameResults.some((r) => r.ok);
+      const maxAfter = frameResults.reduce((max, r) => (typeof r.after === "number" ? Math.max(max, r.after) : max), 0);
+      cardCount = Math.max(cardCount, maxAfter);
     } catch (err) {
       hasNext = false;
     }
