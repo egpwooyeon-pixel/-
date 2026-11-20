@@ -8,18 +8,46 @@ function setStatus(text, isError) {
 // blogStoreName/...) deliberately — same Gemini key and same store
 // info, no reason to make the user enter either twice.
 async function loadSettings() {
-  const { blogApiKey, blogModel, blogStoreName, blogStoreArea, blogStoreCategory } = await chrome.storage.local.get([
-    "blogApiKey",
-    "blogModel",
-    "blogStoreName",
-    "blogStoreArea",
-    "blogStoreCategory",
-  ]);
+  const { blogApiKey, blogModel, blogStoreName, blogStoreArea, blogStoreCategory, blogCustomInstructions } =
+    await chrome.storage.local.get([
+      "blogApiKey",
+      "blogModel",
+      "blogStoreName",
+      "blogStoreArea",
+      "blogStoreCategory",
+      "blogCustomInstructions",
+    ]);
   document.getElementById("apiKeyInput").value = blogApiKey || "";
   document.getElementById("modelSelect").value = blogModel || "gemini-3.8-flash";
   document.getElementById("storeNameInput").value = blogStoreName || "";
   document.getElementById("storeAreaInput").value = blogStoreArea || "";
   document.getElementById("storeCategoryInput").value = blogStoreCategory || "";
+  document.getElementById("customInstructionsInput").value = blogCustomInstructions || "";
+}
+
+// Same rough keyword-based soft filter as blog-writer.js (kept as a
+// separate copy since these are two independent content scripts with
+// no shared module loader — see that file for the reasoning).
+const INSTRUCTION_STOPWORDS = new Set(["제품", "사진", "리뷰", "글", "원고", "내용", "그리고", "그냥", "좀", "것", "거"]);
+function extractInstructionKeywords(text) {
+  return (text || "")
+    .split(/[\s,./!?()\[\]~]+/)
+    .map((tok) =>
+      tok
+        .replace(/^(그리고|그냥|좀|꼭|무조건)/g, "")
+        .replace(/(만|도|은|는|이|가|을|를|으로|로|써줘|해줘|넣어줘|빼줘|제외해줘|포함해줘|해주세요|써주세요)+$/g, "")
+        .trim()
+    )
+    .filter((tok) => tok.length >= 2 && !INSTRUCTION_STOPWORDS.has(tok));
+}
+function filterReviewsByInstructions(reviews, instructions) {
+  const keywords = extractInstructionKeywords(instructions);
+  if (keywords.length === 0) return reviews;
+  const matches = reviews.filter((r) => {
+    const haystack = `${r.option || ""} ${r.body || ""} ${r.keywordTags || ""}`;
+    return keywords.some((kw) => haystack.includes(kw));
+  });
+  return matches.length > 0 ? matches : reviews;
 }
 
 async function saveApiKey() {
@@ -112,6 +140,7 @@ async function handleLoadNaverStoreReviews() {
     body: r.body || "",
     rating: r.rating || "",
     keywordTags: "",
+    option: r.option || "",
     placeName: "",
     photoUrls: Array.isArray(r.photoUrls) ? r.photoUrls : [],
   }));
@@ -359,6 +388,7 @@ async function handleGenerate() {
   const storeCategory = document.getElementById("storeCategoryInput").value.trim();
   const apiKey = document.getElementById("apiKeyInput").value.trim();
   const model = document.getElementById("modelSelect").value;
+  const customInstructions = document.getElementById("customInstructionsInput").value.trim();
   const photosPerPost = Math.max(1, parseInt(document.getElementById("photosPerPostInput").value, 10) || 2);
   const requestedCount = Math.max(1, parseInt(document.getElementById("postCountInput").value, 10) || 20);
 
@@ -375,7 +405,13 @@ async function handleGenerate() {
     return;
   }
 
-  const plan = buildThreadsPostPlan(lastLoadedReviews, photosPerPost, requestedCount);
+  // Filtered BEFORE planning (not after) so reviewIndex values in the
+  // plan line up with this same array below — buildThreadsPostPlan's
+  // reviewIndex is an index into whatever array it's given, so the
+  // lookup after generation has to use that same filtered array, not
+  // the original lastLoadedReviews.
+  const candidateReviews = filterReviewsByInstructions(lastLoadedReviews, customInstructions);
+  const plan = buildThreadsPostPlan(candidateReviews, photosPerPost, requestedCount);
   if (plan.length === 0) {
     setStatus(`사진이 있는 리뷰가 부족해서 글을 만들 수 없습니다 (글 1개당 사진 ${photosPerPost}장 필요).`, true);
     return;
@@ -387,6 +423,7 @@ async function handleGenerate() {
     blogStoreName: storeName,
     blogStoreArea: storeArea,
     blogStoreCategory: storeCategory,
+    blogCustomInstructions: customInstructions,
   });
 
   document.getElementById("resultsContainer").innerHTML = "";
@@ -405,7 +442,7 @@ async function handleGenerate() {
   for (let i = 0; i < plan.length; i++) {
     const photoSlots = plan[i];
     const uniqueReviewIndexes = Array.from(new Set(photoSlots.map((p) => p.reviewIndex)));
-    const reviewTexts = uniqueReviewIndexes.map((idx) => flattenReviewText(lastLoadedReviews[idx]));
+    const reviewTexts = uniqueReviewIndexes.map((idx) => flattenReviewText(candidateReviews[idx]));
 
     setStatus(`글 ${i + 1}/${plan.length} 작성 중...`);
 
@@ -414,6 +451,7 @@ async function handleGenerate() {
       storeName,
       storeArea,
       storeCategory,
+      customInstructions,
       reviewTexts,
       photoSlots,
       apiKey,

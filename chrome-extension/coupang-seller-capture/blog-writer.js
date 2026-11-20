@@ -5,7 +5,7 @@ function setStatus(text, isError) {
 }
 
 async function loadSettings() {
-  const { blogApiKey, blogModel, blogStoreName, blogStoreArea, blogStoreCategory, blogSignatureMenu } =
+  const { blogApiKey, blogModel, blogStoreName, blogStoreArea, blogStoreCategory, blogSignatureMenu, blogCustomInstructions } =
     await chrome.storage.local.get([
       "blogApiKey",
       "blogModel",
@@ -13,6 +13,7 @@ async function loadSettings() {
       "blogStoreArea",
       "blogStoreCategory",
       "blogSignatureMenu",
+      "blogCustomInstructions",
     ]);
   document.getElementById("apiKeyInput").value = blogApiKey || "";
   document.getElementById("modelSelect").value = blogModel || "gemini-3.8-flash";
@@ -20,6 +21,56 @@ async function loadSettings() {
   document.getElementById("storeAreaInput").value = blogStoreArea || "";
   document.getElementById("storeCategoryInput").value = blogStoreCategory || "";
   document.getElementById("signatureMenuInput").value = blogSignatureMenu || "";
+  document.getElementById("customInstructionsInput").value = blogCustomInstructions || "";
+}
+
+// Very rough keyword extraction for soft-filtering which reviews'
+// photos get used by a free-text instruction like "흰색 제품 사진만
+// 써줘". No NLP available here, so this just strips common Korean
+// particles/request-verb endings off whitespace-split tokens and
+// keeps whatever's left that's 2+ characters — good enough to catch
+// the color/option-style keywords this is mainly meant for (Smart
+// Store reviews commonly carry "색상: 화이트" etc. in their option
+// field), not a general-purpose parser.
+const INSTRUCTION_STOPWORDS = new Set([
+  "제품",
+  "사진",
+  "리뷰",
+  "글",
+  "원고",
+  "내용",
+  "그리고",
+  "그냥",
+  "좀",
+  "것",
+  "거",
+]);
+function extractInstructionKeywords(text) {
+  return (text || "")
+    .split(/[\s,./!?()\[\]~]+/)
+    .map((tok) =>
+      tok
+        .replace(/^(그리고|그냥|좀|꼭|무조건)/g, "")
+        .replace(/(만|도|은|는|이|가|을|를|으로|로|써줘|해줘|넣어줘|빼줘|제외해줘|포함해줘|해주세요|써주세요)+$/g, "")
+        .trim()
+    )
+    .filter((tok) => tok.length >= 2 && !INSTRUCTION_STOPWORDS.has(tok));
+}
+
+// Soft-filters reviews whose option/body/keywordTags text contains
+// any keyword pulled from the free-text instruction. Falls back to
+// the full, unfiltered list when the instruction yields no usable
+// keywords or matches nothing — a non-matching instruction (e.g. "20대
+// 말투로 써줘", which is about tone, not photo content) shouldn't zero
+// out every photo.
+function filterReviewsByInstructions(reviews, instructions) {
+  const keywords = extractInstructionKeywords(instructions);
+  if (keywords.length === 0) return reviews;
+  const matches = reviews.filter((r) => {
+    const haystack = `${r.option || ""} ${r.body || ""} ${r.keywordTags || ""}`;
+    return keywords.some((kw) => haystack.includes(kw));
+  });
+  return matches.length > 0 ? matches : reviews;
 }
 
 async function saveApiKey() {
@@ -92,6 +143,7 @@ async function handleLoadNaverStoreReviews() {
     body: r.body || "",
     rating: r.rating || "",
     keywordTags: "",
+    option: r.option || "",
     placeName: "",
     photoUrls: Array.isArray(r.photoUrls) ? r.photoUrls : [],
   }));
@@ -655,6 +707,7 @@ async function handleGenerate() {
   const storeArea = document.getElementById("storeAreaInput").value.trim();
   const storeCategory = document.getElementById("storeCategoryInput").value.trim();
   const signatureMenuHint = document.getElementById("signatureMenuInput").value.trim();
+  const customInstructions = document.getElementById("customInstructionsInput").value.trim();
   const apiKey = document.getElementById("apiKeyInput").value.trim();
   const model = document.getElementById("modelSelect").value;
   const reviewLines = parseReviewsInput();
@@ -680,8 +733,14 @@ async function handleGenerate() {
     return;
   }
 
+  // Filter the candidate pool by the free-text instruction BEFORE
+  // splitting across drafts, so e.g. "흰색만 써줘" narrows which
+  // reviews' photos are even eligible to be picked by selectPhotoSlots
+  // below, not just which ones get mentioned in the prompt text.
+  const filteredPhotoPool = includePhotos ? filterReviewsByInstructions(lastLoadedReviews, customInstructions) : [];
+
   const reviewChunks = chunkArray(reviewLines, requestedDraftCount);
-  const photoChunks = includePhotos ? chunkArray(lastLoadedReviews, requestedDraftCount) : [];
+  const photoChunks = includePhotos ? chunkArray(filteredPhotoPool, requestedDraftCount) : [];
   const draftCount = reviewChunks.length;
 
   await chrome.storage.local.set({
@@ -691,6 +750,7 @@ async function handleGenerate() {
     blogStoreArea: storeArea,
     blogStoreCategory: storeCategory,
     blogSignatureMenu: signatureMenuHint,
+    blogCustomInstructions: customInstructions,
   });
 
   document.getElementById("resultsContainer").innerHTML = "";
@@ -725,6 +785,7 @@ async function handleGenerate() {
       storeArea,
       storeCategory,
       signatureMenuHint,
+      customInstructions,
       reviews: chunkReviewLines,
       apiKey,
       model,

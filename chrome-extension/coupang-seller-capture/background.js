@@ -1339,7 +1339,7 @@ async function fetchImageInlineData(url) {
 // parts, interleaved with its slot number and review context, so
 // captions are grounded in what the model actually sees rather than
 // inferred from text alone.
-async function buildBlogDraftParts({ storeName, storeArea, storeCategory, signatureMenuHint, reviews, photoSlots }) {
+async function buildBlogDraftParts({ storeName, storeArea, storeCategory, signatureMenuHint, customInstructions, reviews, photoSlots }) {
   const hasPhotos = Array.isArray(photoSlots) && photoSlots.length > 0;
   const reviewBlock = reviews.map((r, i) => `${i + 1}. ${r}`).join("\n");
 
@@ -1349,7 +1349,9 @@ async function buildBlogDraftParts({ storeName, storeArea, storeCategory, signat
 
 [리뷰 목록]
 ${reviewBlock}
-${signatureMenuHint ? `\n[참고: 알려준 시그니처 메뉴] ${signatureMenuHint}\n` : ""}`,
+${signatureMenuHint ? `\n[참고: 알려준 시그니처 메뉴] ${signatureMenuHint}\n` : ""}${
+        customInstructions ? `\n[작성자(사용자)의 추가 요청사항 — 반드시 반영할 것] ${customInstructions}\n` : ""
+      }`,
     },
   ];
 
@@ -1569,7 +1571,17 @@ function parseBlogDraftResponse(text, photoSlots) {
   };
 }
 
-async function generateBlogDraft({ storeName, storeArea, storeCategory, signatureMenuHint, reviews, apiKey, model, photoSlots }) {
+async function generateBlogDraft({
+  storeName,
+  storeArea,
+  storeCategory,
+  signatureMenuHint,
+  customInstructions,
+  reviews,
+  apiKey,
+  model,
+  photoSlots,
+}) {
   if (blogDraftRunning) return { ok: false, reason: "already_running" };
   if (!apiKey) return { ok: false, reason: "no_api_key" };
   if (!Array.isArray(reviews) || reviews.length === 0) return { ok: false, reason: "no_reviews" };
@@ -1583,7 +1595,15 @@ async function generateBlogDraft({ storeName, storeArea, storeCategory, signatur
   });
 
   try {
-    const parts = await buildBlogDraftParts({ storeName, storeArea, storeCategory, signatureMenuHint, reviews, photoSlots });
+    const parts = await buildBlogDraftParts({
+      storeName,
+      storeArea,
+      storeCategory,
+      signatureMenuHint,
+      customInstructions,
+      reviews,
+      photoSlots,
+    });
     await setBlogDraftStatus({ phase: "AI 분석 중" });
     const text = await callGeminiForBlogDraft({ apiKey, model: model || "gemini-3.8-flash", parts });
     const result = parseBlogDraftResponse(text, photoSlots);
@@ -1624,12 +1644,14 @@ async function setThreadsPostStatus(patch) {
   return next;
 }
 
-async function buildThreadsPostParts({ storeName, storeArea, storeCategory, reviewTexts, photoSlots }) {
+async function buildThreadsPostParts({ storeName, storeArea, storeCategory, customInstructions, reviewTexts, photoSlots }) {
   const reviewBlock = reviewTexts.map((r, i) => `${i + 1}. ${r}`).join("\n");
 
   const parts = [
     {
-      text: `당신은 쓰레드(Threads)에서 반응이 좋은 글을 많이 써본 한국어 인플루언서입니다. 지금은 "${storeName}"(${storeArea}, ${storeCategory})을 실제로 다녀온 사람인 척 짧은 홍보 게시글 하나를 씁니다. 아래 [참고 리뷰]는 실제 손님들이 남긴 리뷰이고, 이 글에는 사진 ${photoSlots.length}장도 함께 올라갑니다. 리뷰에 없는 사실(가격, 영업시간, 메뉴 구성 등)은 지어내지 마세요.
+      text: `당신은 쓰레드(Threads)에서 반응이 좋은 글을 많이 써본 한국어 인플루언서입니다. 지금은 "${storeName}"(${storeArea}, ${storeCategory})을 실제로 다녀온 사람인 척 짧은 홍보 게시글 하나를 씁니다. 아래 [참고 리뷰]는 실제 손님들이 남긴 리뷰이고, 이 글에는 사진 ${photoSlots.length}장도 함께 올라갑니다. 리뷰에 없는 사실(가격, 영업시간, 메뉴 구성 등)은 지어내지 마세요.${
+        customInstructions ? `\n\n[작성자(사용자)의 추가 요청사항 — 반드시 반영할 것] ${customInstructions}` : ""
+      }
 
 [쓰레드 글쓰기 스타일 — 블로그 원고처럼 쓰지 말 것]
 쓰레드는 블로그가 아닙니다. 잘되는 쓰레드 글의 공통점은:
@@ -1688,7 +1710,16 @@ function parseThreadsPostResponse(text) {
   return { text: text.trim(), parseFailed: true };
 }
 
-async function generateThreadsPost({ storeName, storeArea, storeCategory, reviewTexts, photoSlots, apiKey, model }) {
+async function generateThreadsPost({
+  storeName,
+  storeArea,
+  storeCategory,
+  customInstructions,
+  reviewTexts,
+  photoSlots,
+  apiKey,
+  model,
+}) {
   if (threadsPostRunning) return { ok: false, reason: "already_running" };
   if (!apiKey) return { ok: false, reason: "no_api_key" };
   if (!Array.isArray(photoSlots) || photoSlots.length === 0) return { ok: false, reason: "no_photos" };
@@ -1697,7 +1728,7 @@ async function generateThreadsPost({ storeName, storeArea, storeCategory, review
   await setThreadsPostStatus({ running: true, phase: "AI 작성 중", error: "", result: null });
 
   try {
-    const parts = await buildThreadsPostParts({ storeName, storeArea, storeCategory, reviewTexts, photoSlots });
+    const parts = await buildThreadsPostParts({ storeName, storeArea, storeCategory, customInstructions, reviewTexts, photoSlots });
     const text = await callGeminiForBlogDraft({ apiKey, model: model || "gemini-3.8-flash", parts });
     const result = parseThreadsPostResponse(text);
     await setThreadsPostStatus({ running: false, phase: "완료", error: "", result });
