@@ -91,14 +91,24 @@ function chunkArray(arr, n) {
   return chunks;
 }
 
-// Picks `targetCount` photos spread across as many different reviews
-// as possible (round 0 = one photo from each review, round 1 = a
-// second photo from each review that still has one, and so on) rather
-// than just taking the first N in storage order, which could end up
-// being every photo from a single long review. Reviews with longer
-// bodies go first within each round since they give the AI more to
-// ground a caption in.
-function selectPhotoSlots(reviews, targetCount) {
+// Picks somewhere between `minCount` and `maxCount` photos, preferring
+// a SINGLE reviewer's own photos over mixing people together. If the
+// richest reviewer already has at least `minCount` photos, this uses
+// only that person's photos (capped at `maxCount`) — it does NOT pad
+// out to `maxCount` by pulling in someone else's photos just to hit a
+// round number. Only when even the richest reviewer falls short of
+// `minCount` does it add the next-richest reviewer's photos too, just
+// enough to clear `minCount`. An earlier version forced exactly one
+// fixed count by round-robining across many reviewers for variety,
+// which in practice made a blog post's photo set look like a
+// patchwork of different people's separate visits (different coffee
+// cups, different seating, different lighting from photo to photo)
+// instead of one person's one visit — confirmed by the user comparing
+// actual output, and the min/max range (rather than one fixed number)
+// was requested right after fixing that, specifically so a reviewer
+// with say 9 photos doesn't still get diluted with someone else's just
+// to reach a fixed target of 15.
+function selectPhotoSlots(reviews, minCount, maxCount) {
   const byReview = [];
   reviews.forEach((r, reviewIndex) => {
     const urls = Array.isArray(r.photoUrls) ? r.photoUrls : [];
@@ -113,30 +123,26 @@ function selectPhotoSlots(reviews, targetCount) {
       urls,
     });
   });
-  byReview.sort((a, b) => (b.body || "").length - (a.body || "").length);
+  if (byReview.length === 0) return [];
+  byReview.sort((a, b) => b.urls.length - a.urls.length);
+
+  const targetCount = byReview[0].urls.length >= minCount ? Math.min(byReview[0].urls.length, maxCount) : minCount;
 
   const selected = [];
-  let round = 0;
-  while (selected.length < targetCount) {
-    let addedThisRound = false;
-    for (const group of byReview) {
-      if (group.urls[round]) {
-        selected.push({
-          url: group.urls[round],
-          reviewIndex: group.reviewIndex,
-          photoIndex: round,
-          nickname: group.nickname,
-          body: group.body,
-          rating: group.rating,
-          keywordTags: group.keywordTags,
-          placeName: group.placeName,
-        });
-        addedThisRound = true;
-        if (selected.length >= targetCount) break;
-      }
+  for (const group of byReview) {
+    for (let i = 0; i < group.urls.length && selected.length < targetCount; i++) {
+      selected.push({
+        url: group.urls[i],
+        reviewIndex: group.reviewIndex,
+        photoIndex: i,
+        nickname: group.nickname,
+        body: group.body,
+        rating: group.rating,
+        keywordTags: group.keywordTags,
+        placeName: group.placeName,
+      });
     }
-    if (!addedThisRound) break;
-    round++;
+    if (selected.length >= targetCount) break;
   }
   return selected;
 }
@@ -616,7 +622,8 @@ async function handleGenerate() {
   const model = document.getElementById("modelSelect").value;
   const reviewLines = parseReviewsInput();
   const includePhotos = document.getElementById("includePhotosCheckbox").checked;
-  const photoCountPerDraft = Math.max(1, parseInt(document.getElementById("photoCountInput").value, 10) || 15);
+  const photoCountMin = Math.max(1, parseInt(document.getElementById("photoCountMinInput").value, 10) || 7);
+  const photoCountMax = Math.max(photoCountMin, parseInt(document.getElementById("photoCountMaxInput").value, 10) || 15);
   const requestedDraftCount = Math.max(1, Math.min(20, parseInt(document.getElementById("draftCountInput").value, 10) || 1));
 
   if (!apiKey) {
@@ -663,7 +670,7 @@ async function handleGenerate() {
     const chunkReviewLines = reviewChunks[i];
     let photoSlots = [];
     if (includePhotos) {
-      photoSlots = selectPhotoSlots(photoChunks[i] || [], photoCountPerDraft);
+      photoSlots = selectPhotoSlots(photoChunks[i] || [], photoCountMin, photoCountMax);
     }
 
     setStatus(
@@ -721,5 +728,6 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("generateBtn").addEventListener("click", handleGenerate);
   document.getElementById("includePhotosCheckbox").addEventListener("change", (e) => {
     document.getElementById("photoCountRow").style.display = e.target.checked ? "flex" : "none";
+    document.getElementById("photoCountHint").style.display = e.target.checked ? "block" : "none";
   });
 });

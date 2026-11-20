@@ -205,9 +205,16 @@
     </div>
     <div class="row2" id="photoCountRow" style="margin-top:8px;display:none;">
       <div>
-        <label>원고 1개당 넣을 사진 수</label>
-        <input type="text" id="photoCountInput" value="15" />
+        <label>원고 1개당 사진 수 (최소)</label>
+        <input type="text" id="photoCountMinInput" value="7" />
       </div>
+      <div>
+        <label>원고 1개당 사진 수 (최대)</label>
+        <input type="text" id="photoCountMaxInput" value="15" />
+      </div>
+    </div>
+    <div class="file-hint" id="photoCountHint" style="margin-top:-6px;display:none;">
+      한 리뷰어의 사진 수가 이 범위 안에 있으면 그 사람 사진만 그대로 씁니다(최대치를 억지로 채우려고 다른 사람 사진을 섞지 않습니다) — 최소치보다 적을 때만 다음으로 사진 많은 리뷰어를 추가합니다.
     </div>
   </div>
 

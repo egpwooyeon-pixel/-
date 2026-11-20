@@ -56,11 +56,17 @@ function updatePoolStats() {
     return;
   }
   const totalPhotos = countTotalPhotos(lastLoadedReviews);
-  const reviewsWithPhotos = lastLoadedReviews.filter((r) => Array.isArray(r.photoUrls) && r.photoUrls.length > 0).length;
   const photosPerPost = Math.max(1, parseInt(document.getElementById("photosPerPostInput").value, 10) || 2);
-  const maxPosts = Math.floor(totalPhotos / photosPerPost);
+  // Each post's photos all come from one single review (see
+  // buildThreadsPostPlan) — so the real max isn't totalPhotos /
+  // photosPerPost, it's the sum of floor(reviewPhotoCount /
+  // photosPerPost) per review, and a review with fewer than
+  // photosPerPost photos contributes 0. Just run the real planner with
+  // no cap to get the true number instead of approximating it here.
+  const usableReviews = lastLoadedReviews.filter((r) => Array.isArray(r.photoUrls) && r.photoUrls.length >= photosPerPost).length;
+  const maxPosts = buildThreadsPostPlan(lastLoadedReviews, photosPerPost, Infinity).length;
   el.classList.remove("hidden");
-  el.textContent = `사진 있는 리뷰 ${reviewsWithPhotos}건, 사진 총 ${totalPhotos}장 → 글 1개당 사진 ${photosPerPost}장씩이면 최대 ${maxPosts}개 글 생성 가능`;
+  el.textContent = `사진 ${photosPerPost}장 이상인 리뷰 ${usableReviews}건(총 사진 ${totalPhotos}장) → 한 리뷰어 사진만으로 글마다 채우면 최대 ${maxPosts}개 글 생성 가능 (사진이 ${photosPerPost}장보다 적은 리뷰는 쓰이지 않습니다)`;
 }
 
 async function handleLoadCollected() {
@@ -87,56 +93,50 @@ async function handleLoadCollected() {
   updatePoolStats();
 }
 
-// Builds up to `maxPosts` posts, each exactly `photosPerPost` photos,
-// by flattening every loaded review's photos into one pool (spread
-// across reviews round-robin — one photo from each review with photos
-// first, then a second from each that still has one, and so on, same
-// idea as the blog tool's selectPhotoSlots) and then chunking that
-// pool sequentially. A trailing chunk shorter than photosPerPost is
-// dropped rather than shipped as a short post.
+// Builds up to `maxPosts` posts, each exactly `photosPerPost` photos —
+// and, deliberately, each post's photos all come from the SAME single
+// review. An earlier version pooled every review's photos together
+// round-robin and chunked the pool sequentially, which could (and did)
+// put two different reviewers' photos in one post — different coffee
+// cups, different seating, different lighting from shot to shot —
+// which reads as implausible for a single post meant to look like one
+// visit. Confirmed by the user comparing actual output from the blog
+// tool's version of this same problem.
+//
+// Each review with at least `photosPerPost` photos contributes
+// floor(photoCount / photosPerPost) posts from its own photos only; a
+// review with fewer than that contributes none (its leftover photos
+// go unused by this tool) — that's the deliberate trade-off for every
+// post looking like a real single visit rather than squeezing out the
+// maximum possible post count. Reviews with the most photos are
+// processed first so richer reviews (more to draw a caption from)
+// fill the `maxPosts` cap before thinner ones.
 function buildThreadsPostPlan(reviews, photosPerPost, maxPosts) {
-  const byReview = [];
-  reviews.forEach((r, reviewIndex) => {
-    const urls = Array.isArray(r.photoUrls) ? r.photoUrls : [];
-    if (urls.length === 0) return;
-    byReview.push({
-      reviewIndex,
-      nickname: r.nickname,
-      body: r.body,
-      rating: r.rating,
-      keywordTags: r.keywordTags,
-      placeName: r.placeName,
-      urls,
-    });
-  });
-  byReview.sort((a, b) => (b.body || "").length - (a.body || "").length);
-
-  const pool = [];
-  let round = 0;
-  let addedAny = true;
-  while (addedAny) {
-    addedAny = false;
-    for (const group of byReview) {
-      if (group.urls[round]) {
-        pool.push({
-          url: group.urls[round],
-          reviewIndex: group.reviewIndex,
-          photoIndex: round,
-          nickname: group.nickname,
-          body: group.body,
-          rating: group.rating,
-          keywordTags: group.keywordTags,
-          placeName: group.placeName,
-        });
-        addedAny = true;
-      }
-    }
-    round++;
-  }
+  const candidates = reviews
+    .map((r, reviewIndex) => ({ r, reviewIndex }))
+    .filter(({ r }) => Array.isArray(r.photoUrls) && r.photoUrls.length >= photosPerPost);
+  candidates.sort((a, b) => b.r.photoUrls.length - a.r.photoUrls.length);
 
   const posts = [];
-  for (let i = 0; i + photosPerPost <= pool.length && posts.length < maxPosts; i += photosPerPost) {
-    posts.push(pool.slice(i, i + photosPerPost));
+  for (const { r, reviewIndex } of candidates) {
+    const urls = r.photoUrls;
+    for (let i = 0; i + photosPerPost <= urls.length; i += photosPerPost) {
+      if (posts.length >= maxPosts) return posts;
+      const chunk = [];
+      for (let j = 0; j < photosPerPost; j++) {
+        chunk.push({
+          url: urls[i + j],
+          reviewIndex,
+          photoIndex: i + j,
+          nickname: r.nickname,
+          body: r.body,
+          rating: r.rating,
+          keywordTags: r.keywordTags,
+          placeName: r.placeName,
+        });
+      }
+      posts.push(chunk);
+    }
   }
   return posts;
 }
