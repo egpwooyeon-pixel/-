@@ -1435,6 +1435,106 @@ async function generateBlogDraft({ storeName, storeArea, storeCategory, signatur
   }
 }
 
+// --- 쓰레드(Threads) 홍보글 생성 (AI) ----------------------------
+// Short-form sibling of the blog-draft generator above: one small,
+// fixed-size batch of photos + whichever reviews they came from -> one
+// punchy Threads-length post. Reuses callGeminiForBlogDraft (it just
+// takes a prebuilt `parts` array, nothing blog-specific about it) but
+// has its own prompt/schema and its own running flag + status, since a
+// Threads batch fires many more, smaller calls in one run than a
+// single blog draft does and shouldn't be blocked by — or block — an
+// unrelated blog-draft generation happening around the same time.
+let threadsPostRunning = false;
+
+async function getThreadsPostStatus() {
+  const { threadsPostStatus } = await chrome.storage.local.get("threadsPostStatus");
+  return threadsPostStatus || { running: false, phase: "", error: "", result: null, updatedAt: 0 };
+}
+
+async function setThreadsPostStatus(patch) {
+  const current = await getThreadsPostStatus();
+  const next = { ...current, ...patch, updatedAt: Date.now() };
+  await chrome.storage.local.set({ threadsPostStatus: next });
+  return next;
+}
+
+async function buildThreadsPostParts({ storeName, storeArea, storeCategory, reviewTexts, photoSlots }) {
+  const reviewBlock = reviewTexts.map((r, i) => `${i + 1}. ${r}`).join("\n");
+
+  const parts = [
+    {
+      text: `당신은 실제 방문 리뷰를 참고해서 쓰레드(Threads)에 올릴 짧은 홍보 게시글을 쓰는 한국어 작성자입니다. 아래는 "${storeName}"(${storeArea}, ${storeCategory})의 실제 리뷰 내용과, 이 글과 함께 올릴 사진 ${photoSlots.length}장입니다. 리뷰에 없는 내용은 지어내지 마세요.
+
+[참고 리뷰]
+${reviewBlock}
+`,
+    },
+  ];
+
+  parts.push({
+    text: `\n아래에 사진 ${photoSlots.length}장이 첨부되어 있습니다. 실제로 사진에 보이는 내용을 참고해서 글을 쓰세요(리뷰 텍스트만으로 추측하지 마세요).\n`,
+  });
+  for (let i = 0; i < photoSlots.length; i++) {
+    const slot = photoSlots[i];
+    parts.push({ text: `사진 ${i + 1}:` });
+    try {
+      parts.push({ inlineData: await fetchImageInlineData(slot.url) });
+    } catch (err) {
+      parts.push({ text: "(이 사진은 불러오지 못했습니다)" });
+    }
+  }
+
+  parts.push({
+    text: `
+다른 설명 없이 아래 JSON 형식으로만 답하세요(마크다운 코드블록 없이 순수 JSON 하나만):
+
+{
+  "text": "쓰레드에 바로 올릴 수 있는 본문. 1인칭 방문 후기 톤으로 2~4문장, 이모지 1~2개 정도 자연스럽게, 과장 광고 문구 없이, 끝에 해시태그 2~4개(모두 '#단어' 형태, 띄어쓰기 없이)를 포함해서 전체 400자 이내로 작성."
+}`,
+  });
+
+  return parts;
+}
+
+function parseThreadsPostResponse(text) {
+  const cleaned = text
+    .trim()
+    .replace(/^```(json)?/i, "")
+    .replace(/```$/, "")
+    .trim();
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (typeof parsed.text === "string" && parsed.text.trim()) {
+      return { text: parsed.text.trim(), parseFailed: false };
+    }
+  } catch (err) {
+    // fall through to the raw-text fallback below
+  }
+  return { text: text.trim(), parseFailed: true };
+}
+
+async function generateThreadsPost({ storeName, storeArea, storeCategory, reviewTexts, photoSlots, apiKey, model }) {
+  if (threadsPostRunning) return { ok: false, reason: "already_running" };
+  if (!apiKey) return { ok: false, reason: "no_api_key" };
+  if (!Array.isArray(photoSlots) || photoSlots.length === 0) return { ok: false, reason: "no_photos" };
+
+  threadsPostRunning = true;
+  await setThreadsPostStatus({ running: true, phase: "AI 작성 중", error: "", result: null });
+
+  try {
+    const parts = await buildThreadsPostParts({ storeName, storeArea, storeCategory, reviewTexts, photoSlots });
+    const text = await callGeminiForBlogDraft({ apiKey, model: model || "gemini-3.8-flash", parts });
+    const result = parseThreadsPostResponse(text);
+    await setThreadsPostStatus({ running: false, phase: "완료", error: "", result });
+    return { ok: true, result };
+  } catch (err) {
+    await setThreadsPostStatus({ running: false, phase: "", error: (err && err.message) || "알 수 없는 오류" });
+    return { ok: false, reason: "error", error: (err && err.message) || "알 수 없는 오류" };
+  } finally {
+    threadsPostRunning = false;
+  }
+}
+
 // --- 자동 반복 실행 (탭 열기 → 열려있는 탭 캡처+닫기를 주기적으로 반복) ----
 // Chains the two existing, already-safe steps the user was doing by
 // hand every time — "키워드로 상품 탭만 순서대로 열기" then "열려있는
@@ -1845,6 +1945,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     getBlogDraftStatus().then(sendResponse);
     return true;
   }
+  if (message && message.type === "GENERATE_THREADS_POST" && Array.isArray(message.photoSlots)) {
+    generateThreadsPost(message).then(sendResponse);
+    return true;
+  }
+  if (message && message.type === "GET_THREADS_POST_STATUS") {
+    getThreadsPostStatus().then(sendResponse);
+    return true;
+  }
   return false;
 });
 
@@ -1921,5 +2029,10 @@ chrome.commands.onCommand.addListener(async (command) => {
   const blogStatus = await getBlogDraftStatus();
   if (blogStatus.running && !blogDraftRunning) {
     await setBlogDraftStatus({ running: false, error: "interrupted" });
+  }
+
+  const threadsStatus = await getThreadsPostStatus();
+  if (threadsStatus.running && !threadsPostRunning) {
+    await setThreadsPostStatus({ running: false, error: "interrupted" });
   }
 })();

@@ -961,4 +961,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("openBlogWriterBtn").addEventListener("click", () => {
     chrome.tabs.create({ url: chrome.runtime.getURL("blog-writer.html") });
   });
+  document.getElementById("openThreadsWriterBtn").addEventListener("click", () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL("threads-writer.html") });
+  });
 });
