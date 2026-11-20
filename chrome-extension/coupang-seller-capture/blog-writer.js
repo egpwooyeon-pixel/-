@@ -15,7 +15,7 @@ async function loadSettings() {
       "blogSignatureMenu",
     ]);
   document.getElementById("apiKeyInput").value = blogApiKey || "";
-  document.getElementById("modelSelect").value = blogModel || "claude-sonnet-5-5";
+  document.getElementById("modelSelect").value = blogModel || "gemini-2.5-flash";
   document.getElementById("storeNameInput").value = blogStoreName || "";
   document.getElementById("storeAreaInput").value = blogStoreArea || "";
   document.getElementById("storeCategoryInput").value = blogStoreCategory || "";
@@ -98,7 +98,7 @@ async function handleGenerate() {
   const reviews = parseReviewsInput();
 
   if (!apiKey) {
-    setStatus("먼저 Anthropic API 키를 입력하고 저장하세요.", true);
+    setStatus("먼저 Gemini API 키를 입력하고 저장하세요.", true);
     return;
   }
   if (!storeName) {

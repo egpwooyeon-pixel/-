@@ -94,23 +94,22 @@
   </div>
 
   <div class="card">
-    <h2>1. Anthropic API 설정</h2>
+    <h2>1. Google Gemini API 설정 (무료)</h2>
     <div class="file-hint">
-      원고 생성은 Anthropic(Claude) API를 사용합니다. <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>에서 발급받은 본인 API 키를 아래에 저장하세요 — 이 키는 이 브라우저(확장프로그램 로컬 저장소)에만 저장되고, api.anthropic.com으로만 직접 전송됩니다. 호출마다 Anthropic 계정에 비용이 청구됩니다.
+      원고 생성은 Google Gemini API를 사용합니다 — 개인 사용 수준에서는 무료 티어로 비용 없이 쓸 수 있습니다(다만 분당/일일 호출 한도가 있어, 한도를 넘으면 잠시 후 다시 시도해야 합니다). <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>에서 구글 계정으로 로그인해 무료로 API 키를 발급받아 아래에 저장하세요 — 이 키는 이 브라우저(확장프로그램 로컬 저장소)에만 저장되고, generativelanguage.googleapis.com으로만 직접 전송됩니다.
     </div>
     <div class="row2">
       <div>
         <label>API 키</label>
-        <input type="password" id="apiKeyInput" placeholder="sk-ant-..." />
+        <input type="password" id="apiKeyInput" placeholder="AIza..." />
       </div>
       <div>
         <label>모델</label>
-        <select id="modelSelect">
-          <option value="claude-sonnet-5-5">claude-sonnet-5-5 (기본, 균형)</option>
-          <option value="claude-haiku-5-5">claude-haiku-5-5 (빠르고 저렴)</option>
-          <option value="claude-opus-5-5">claude-opus-5-5 (고품질, 고비용)</option>
-        </select>
+        <input type="text" id="modelSelect" value="gemini-2.5-flash" placeholder="gemini-2.5-flash" />
       </div>
+    </div>
+    <div class="file-hint" style="margin-top:-6px;">
+      모델 이름이 자주 바뀌니, 안 되면 <a href="https://ai.google.dev/gemini-api/docs/models" target="_blank" rel="noopener">최신 모델 목록</a>에서 "flash"가 들어간 이름으로 바꿔보세요.
     </div>
     <button id="saveApiKeyBtn">저장</button>
   </div>

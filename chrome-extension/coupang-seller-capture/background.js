@@ -1148,13 +1148,17 @@ async function startPlacePhotoDownload(reviews) {
 // --- 네이버 플레이스 후기 기반 블로그 원고 생성 (AI) ---------------
 // Takes review text the user pasted by hand, or pulled in from the
 // place-review collector above, plus basic store info, and asks the
-// Anthropic Claude API to
+// Google Gemini API to
 // (1) classify recurring keywords into 필수/좋은/시그니처메뉴 buckets and
-// (2) draft a natural first-person blog post that works them in. The
-// user's own Anthropic API key is stored locally and sent directly to
-// api.anthropic.com from this service worker — never to any server of
-// ours. Only review body text is sent, never reviewer names/ids, so no
-// individual reviewer's identity reaches the third-party API.
+// (2) draft a natural first-person blog post that works them in. Uses
+// Gemini specifically because its free tier has no cost for this kind
+// of occasional, low-volume use (unlike Anthropic/OpenAI, which are
+// pay-per-call) — the tradeoff is the free tier's rate limits, which
+// show up as an API error if hit. The user's own Gemini API key is
+// stored locally and sent directly to generativelanguage.googleapis.com
+// from this service worker — never to any server of ours. Only review
+// body text is sent, never reviewer names/ids, so no individual
+// reviewer's identity reaches the third-party API.
 
 let blogDraftRunning = false;
 
@@ -1196,19 +1200,16 @@ ${signatureMenuHint ? `\n[참고: 알려준 시그니처 메뉴] ${signatureMenu
 }`;
 }
 
-async function callAnthropicForBlogDraft({ apiKey, model, prompt }) {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+async function callGeminiForBlogDraft({ apiKey, model, prompt }) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    model
+  )}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+  const res = await fetch(url, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
+    headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      model,
-      max_tokens: 2000,
-      messages: [{ role: "user", content: prompt }],
+      contents: [{ parts: [{ text: prompt }] }],
     }),
   });
 
@@ -1220,12 +1221,17 @@ async function callAnthropicForBlogDraft({ apiKey, model, prompt }) {
     } catch (err) {
       // response body wasn't JSON — leave detail blank
     }
-    throw new Error(`API 오류 (${res.status})${detail ? ": " + detail : ""}`);
+    const rateLimited = res.status === 429 ? " (무료 티어 호출 한도 초과일 수 있습니다 — 잠시 후 다시 시도하세요)" : "";
+    throw new Error(`API 오류 (${res.status})${detail ? ": " + detail : ""}${rateLimited}`);
   }
 
   const data = await res.json();
-  const text = data && data.content && data.content[0] && data.content[0].text;
-  if (!text) throw new Error("API 응답에서 텍스트를 찾지 못했습니다.");
+  const candidate = data && data.candidates && data.candidates[0];
+  const text = candidate && candidate.content && candidate.content.parts && candidate.content.parts[0] && candidate.content.parts[0].text;
+  if (!text) {
+    const blockReason = data && data.promptFeedback && data.promptFeedback.blockReason;
+    throw new Error(blockReason ? `Gemini가 응답을 차단했습니다 (${blockReason})` : "API 응답에서 텍스트를 찾지 못했습니다.");
+  }
   return text;
 }
 
@@ -1265,7 +1271,7 @@ async function generateBlogDraft({ storeName, storeArea, storeCategory, signatur
 
   try {
     const prompt = buildBlogDraftPrompt({ storeName, storeArea, storeCategory, signatureMenuHint, reviews });
-    const text = await callAnthropicForBlogDraft({ apiKey, model: model || "claude-sonnet-5-5", prompt });
+    const text = await callGeminiForBlogDraft({ apiKey, model: model || "gemini-2.5-flash", prompt });
     const result = parseBlogDraftResponse(text);
     await setBlogDraftStatus({ running: false, phase: "완료", error: "", result });
     return { ok: true, result };
