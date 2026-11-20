@@ -73,6 +73,16 @@ async function handleLoadCollected() {
     return;
   }
   lastLoadedReviews = reviews;
+
+  // Every collected review carries the place name read from
+  // document.title at collection time — auto-fill it so switching to
+  // a newly-loaded place's reviews doesn't leave a stale or empty
+  // storeName behind. Area/category aren't collected at all yet (the
+  // scraper never reads the place's info tab), so those are left for
+  // the user to fill in by hand.
+  const placeNameReview = reviews.find((r) => r.placeName);
+  if (placeNameReview) document.getElementById("storeNameInput").value = placeNameReview.placeName;
+
   statusEl.textContent = `${reviews.length}건을 불러왔습니다.`;
   updatePoolStats();
 }

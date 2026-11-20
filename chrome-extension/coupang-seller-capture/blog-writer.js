@@ -45,6 +45,16 @@ async function handleLoadCollected() {
     return;
   }
   lastLoadedReviews = reviews;
+
+  // Every collected review carries the place name read from
+  // document.title at collection time — auto-fill it so switching to
+  // a newly-loaded place's reviews doesn't leave a stale or empty
+  // storeName behind. Area/category aren't collected at all yet (the
+  // scraper never reads the place's info tab), so those fields are
+  // left for the user to fill in by hand.
+  const placeNameReview = reviews.find((r) => r.placeName);
+  if (placeNameReview) document.getElementById("storeNameInput").value = placeNameReview.placeName;
+
   // Each review's body may itself contain line breaks (from the
   // page's own <br> tags) — flatten those to spaces so the one-
   // review-per-line convention the textarea/parseReviewsInput rely on
