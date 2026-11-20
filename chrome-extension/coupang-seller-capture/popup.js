@@ -438,7 +438,7 @@ async function renderPlaceReviewStatus() {
   }
   startBtn.disabled = !!status.running;
   if (status.running) {
-    el.innerHTML = `수집 중 — <b>${status.collected}</b> / ${status.target}건`;
+    el.innerHTML = status.phase ? `수집 중 — ${status.phase}` : `수집 중 — <b>${status.collected}</b> / ${status.target}건`;
   } else if (status.error === "interrupted") {
     el.textContent = `크롬이 확장프로그램을 잠시 재시작해 중단됐습니다 (${status.collected}건까지 저장됨). 필요하면 다시 시작해주세요.`;
   } else if (status.error === "cancelled") {

@@ -1001,6 +1001,19 @@ async function appendPlaceReviews(newReviews) {
   return added;
 }
 
+// Loads all the way first (clicking "더보기" repeatedly), then does
+// ONE reveal-everything scroll sweep, then ONE extraction pass over
+// the whole list — rather than the earlier design, which re-extracted
+// all currently-rendered cards after every single "더보기" click. That
+// repeated-extraction design silently lost photos: a card extracted
+// early (before its lazyload-wrapper had rendered any `<img>`) got
+// permanently locked in with empty photoUrls by appendPlaceReviews's
+// dedupe-skip, even though a later pass — after more scrolling had
+// happened — would have read the real photos out of the same card.
+// Confirmed live: 150 reviews collected that way came back with only
+// 3 reviews' worth of photos. Extracting once, after revealAllPlaceCards
+// has had a chance to trigger every card's lazyload, avoids that
+// entirely.
 async function startPlaceReviewCollection(tabId) {
   isRunning = true;
   cancelRequested = false;
@@ -1009,7 +1022,7 @@ async function startPlaceReviewCollection(tabId) {
   await chrome.storage.local.set({ placeReviews: [] });
   await setPlaceReviewStatus({
     running: true,
-    phase: "",
+    phase: "리뷰 목록 불러오는 중",
     collected: 0,
     target: PLACE_REVIEW_TARGET,
     error: "",
@@ -1024,59 +1037,80 @@ async function startPlaceReviewCollection(tabId) {
     // ignore; pageUrl stays blank
   }
 
-  let collected = 0;
+  let cardCount = 0;
   let round = 0;
   const MAX_ROUNDS = 40;
 
-  while (collected < PLACE_REVIEW_TARGET && round < MAX_ROUNDS && !cancelRequested) {
-    let pageReviews = [];
-    try {
-      const results = await chrome.scripting.executeScript({
-        target: { tabId, allFrames: true },
-        func: extractVisiblePlaceReviews,
-      });
-      pageReviews = (results || []).flatMap((r) => (r && r.result) || []);
-    } catch (err) {
-      await setPlaceReviewStatus({ error: "리뷰 추출 중 오류: " + ((err && err.message) || "알 수 없는 오류") });
-      break;
-    }
-
-    if (pageReviews.length === 0 && round === 0) {
-      await setPlaceReviewStatus({
-        error: "리뷰를 찾지 못했습니다 — 플레이스 리뷰 탭이 화면에 보이는 상태인지 확인하거나, 리뷰 카드 outerHTML을 다시 보내주세요.",
-      });
-      break;
-    }
-
-    const tagged = pageReviews.map((r) => ({ ...r, pageUrl, capturedAt: formatDateTime(new Date()) }));
-    const added = await appendPlaceReviews(tagged);
-    collected += added;
-    await setPlaceReviewStatus({ collected, phase: `${collected}건 수집됨` });
-
-    if (collected >= PLACE_REVIEW_TARGET || cancelRequested) break;
-
+  while (cardCount < PLACE_REVIEW_TARGET && round < MAX_ROUNDS && !cancelRequested) {
     let hasNext = false;
     try {
       const nextResults = await chrome.scripting.executeScript({
         target: { tabId, allFrames: true },
         func: loadMorePlaceReviews,
       });
-      hasNext = (nextResults || []).some((r) => r && r.result && r.result.ok);
+      const result = (nextResults || []).map((r) => r && r.result).find(Boolean);
+      hasNext = !!(result && result.ok);
+      if (result && typeof result.after === "number") cardCount = Math.max(cardCount, result.after);
     } catch (err) {
       hasNext = false;
     }
-    if (!hasNext) break;
+
+    if (round === 0 && cardCount === 0 && !hasNext) {
+      await setPlaceReviewStatus({
+        running: false,
+        error: "리뷰를 찾지 못했습니다 — 플레이스 리뷰 탭이 화면에 보이는 상태인지 확인하거나, 리뷰 카드 outerHTML을 다시 보내주세요.",
+      });
+      isRunning = false;
+      return;
+    }
+
+    await setPlaceReviewStatus({ phase: `리뷰 목록 불러오는 중 (${cardCount}건)` });
+
+    if (!hasNext || cardCount >= PLACE_REVIEW_TARGET || cancelRequested) break;
 
     round++;
     await delayWithJitter(2500);
   }
 
-  isRunning = false;
   if (cancelRequested) {
+    isRunning = false;
     await setPlaceReviewStatus({ running: false, error: "cancelled" });
-  } else {
-    await setPlaceReviewStatus({ running: false });
+    return;
   }
+
+  await setPlaceReviewStatus({ phase: `사진 불러오는 중 (${cardCount}건, 시간이 좀 걸릴 수 있습니다)` });
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: revealAllPlaceCards,
+    });
+  } catch (err) {
+    // Best-effort — extraction still proceeds even if this fails, just
+    // with whatever photos happened to already be rendered.
+  }
+
+  await setPlaceReviewStatus({ phase: "리뷰 추출 중" });
+  let pageReviews = [];
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: extractVisiblePlaceReviews,
+    });
+    pageReviews = (results || []).flatMap((r) => (r && r.result) || []);
+  } catch (err) {
+    isRunning = false;
+    await setPlaceReviewStatus({
+      running: false,
+      error: "리뷰 추출 중 오류: " + ((err && err.message) || "알 수 없는 오류"),
+    });
+    return;
+  }
+
+  const tagged = pageReviews.map((r) => ({ ...r, pageUrl, capturedAt: formatDateTime(new Date()) }));
+  const added = await appendPlaceReviews(tagged);
+
+  isRunning = false;
+  await setPlaceReviewStatus({ running: false, collected: added, phase: `${added}건 수집됨` });
 }
 
 // --- 네이버 플레이스 리뷰 사진 다운로드 ---------------------------

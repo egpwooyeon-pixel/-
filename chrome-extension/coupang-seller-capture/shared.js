@@ -796,6 +796,58 @@ async function loadMorePlaceReviews() {
   return { ok: after > before, before, after, via: "scroll" };
 }
 
+// Many of a review's photo <img> elements sit inside a "lazyload-
+// wrapper" component (that exact class name is visible in the real
+// markup) that only renders its real content once scrolled into view
+// — confirmed live: collecting 150 reviews only captured photoUrls for
+// 3 of them, matching roughly how many cards happened to be in the
+// viewport at the moment extractVisiblePlaceReviews ran. This sweeps
+// the whole list from top to bottom in viewport-sized steps, pausing
+// briefly at each one, so every card's lazyload wrapper gets a chance
+// to fire before extraction reads photoUrls out of the DOM. Meant to
+// run once, after the "더보기" loading loop is done and before the one
+// extraction pass — not on every loop iteration, which would make an
+// already-slow collection far slower for no benefit (cards already
+// revealed don't need revealing again).
+async function revealAllPlaceCards() {
+  const cards = document.querySelectorAll("li.place_apply_pui");
+  if (cards.length === 0) return { ok: false, count: 0 };
+
+  function findScrollableAncestor(el) {
+    let node = el.parentElement;
+    while (node && node !== document.body) {
+      const style = getComputedStyle(node);
+      if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight + 4) {
+        return node;
+      }
+      node = node.parentElement;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+
+  const scrollTarget = findScrollableAncestor(cards[0]);
+  const step = Math.max(Math.round(scrollTarget.clientHeight * 0.8), 400);
+  const maxScroll = scrollTarget.scrollHeight;
+
+  for (let pos = 0; pos <= maxScroll; pos += step) {
+    scrollTarget.scrollTop = pos;
+    window.scrollTo(0, pos);
+    scrollTarget.dispatchEvent(new Event("scroll"));
+    window.dispatchEvent(new Event("scroll"));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+
+  // Back to the top: some lazyload implementations only reveal while
+  // scrolling in a particular direction, so a single downward sweep
+  // can still miss cards very close to the top that started already
+  // "past" the trigger point.
+  scrollTarget.scrollTop = 0;
+  window.scrollTo(0, 0);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+
+  return { ok: true, count: cards.length };
+}
+
 // Runs on a Gmail compose tab (mail.google.com) that background.js just
 // opened via the compose URL scheme (view=cm&to=&su=&body=). Shows a
 // countdown banner and, when it reaches 0, clicks Gmail's own Send
