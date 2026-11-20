@@ -205,7 +205,7 @@
     </div>
     <div class="row2" id="photoCountRow" style="margin-top:8px;display:none;">
       <div>
-        <label>블로그에 넣을 사진 수</label>
+        <label>원고 1개당 넣을 사진 수</label>
         <input type="text" id="photoCountInput" value="15" />
       </div>
     </div>
@@ -213,62 +213,20 @@
 
   <div class="card">
     <h2>4. 원고 생성</h2>
-    <button id="generateBtn" class="primaryBtn">AI로 원고 만들기</button>
+    <div class="row2">
+      <div>
+        <label>만들 원고 개수</label>
+        <input type="text" id="draftCountInput" value="1" />
+      </div>
+    </div>
+    <div class="file-hint" style="margin-top:-6px;">
+      2개 이상이면 불러온 리뷰(와 사진 옵션을 켰다면 사진도)를 원고 수만큼 나눠서, 각 원고가 서로 다른 리뷰/사진을 쓰도록 만듭니다 — 모아둔 리뷰가 많은데 원고 1개에만 쓰이는 게 아깝다면 늘려보세요. 원고 하나당 Gemini API를 한 번씩 호출합니다(무료 티어 호출 한도에 유의).
+    </div>
+    <button id="generateBtn" class="primaryBtn" style="margin-top:8px;">AI로 원고 만들기</button>
     <div id="status"></div>
   </div>
 
-  <div class="card hidden" id="resultCard">
-    <h2>5. 결과</h2>
-    <div class="keyword-group">
-      <div class="label">제목 추천 (검색 많이 되는 키워드 조합)</div>
-      <div id="titlesList"></div>
-    </div>
-    <div class="keyword-group">
-      <div class="label">필수 키워드</div>
-      <div id="requiredKeywords"></div>
-    </div>
-    <div class="keyword-group">
-      <div class="label">좋은 키워드</div>
-      <div id="goodKeywords"></div>
-    </div>
-    <div class="keyword-group">
-      <div class="label">시그니처 메뉴</div>
-      <div id="signatureMenuOut"></div>
-    </div>
-    <label style="margin-top:8px;">블로그 원고 (수정 가능, 본문 중 "[사진 삽입: N]"은 아래 사진 배치 가이드의 N번 사진을 끼워 넣을 자리입니다)</label>
-    <textarea id="draftOutput" rows="14"></textarea>
-    <div class="row2" style="margin-bottom:0;">
-      <button id="copyDraftBtn">클립보드에 복사</button>
-      <button id="downloadZipBtn" type="button">원고+사진 ZIP 다운로드</button>
-    </div>
-    <div id="downloadZipStatus" class="file-hint" style="margin-top:4px;"></div>
-
-    <div class="keyword-group" style="margin-top:16px;">
-      <div class="label">해시태그</div>
-      <div id="hashtagsOut"></div>
-      <button id="copyHashtagsBtn" type="button" style="margin-top:6px;">해시태그 전체 복사</button>
-    </div>
-
-    <div id="photoGuideSection" class="hidden" style="margin-top:16px;">
-      <label>사진 배치 가이드</label>
-      <div class="file-hint">
-        본문의 "[사진 삽입: N]" 자리에 아래 N번 사진을 넣으세요. 파일명은 "리뷰 사진 전체 다운로드"로 받은 로컬 파일명과 같은 규칙이라, 다운로드 폴더에서 같은 이름을 찾아 끌어넣으면 됩니다.
-      </div>
-      <div id="photoGuideList"></div>
-    </div>
-  </div>
-
-  <div class="card hidden" id="previewCard">
-    <h2>6. 블로그용 미리보기 (복사해서 붙여넣기)</h2>
-    <div class="file-hint">
-      아래 내용을 "전체 선택" 버튼으로 선택하고 Ctrl+C(맥: Cmd+C)로 복사한 뒤, 네이버 블로그 글쓰기 화면에 붙여넣으면(Ctrl+V) 텍스트와 사진이 함께 들어갑니다. 완전 자동 발행은 아니지만 사진을 하나씩 끌어넣을 필요가 없어집니다. 붙여넣은 뒤 줄바꿈·사진 크기 등은 블로그 에디터에서 한 번 더 다듬어주세요.
-    </div>
-    <div class="row2" style="margin-bottom:10px;">
-      <button id="refreshPreviewBtn" type="button">미리보기 새로고침 (원고 수정 후 다시 반영)</button>
-      <button id="selectPreviewBtn" type="button" class="primaryBtn">전체 선택하기</button>
-    </div>
-    <div id="blogPreview" class="blog-preview" contenteditable="true"></div>
-  </div>
+  <div id="resultsContainer"></div>
 
   <script src="lib/jszip.min.js"></script>
   <script src="blog-writer.js"></script>

@@ -66,6 +66,21 @@ function sanitizeForFilename(s) {
   return (s || "").replace(/[\\/:*?"<>|]/g, "_").trim();
 }
 
+// Splits `arr` into up to `n` contiguous, roughly-equal chunks —
+// used to divide the loaded reviews (and, separately, the loaded
+// review objects for photo selection) across multiple draft requests.
+// Returns fewer than `n` chunks if `arr` is too short to split that
+// many ways (never returns an empty chunk).
+function chunkArray(arr, n) {
+  const chunks = [];
+  const size = Math.ceil(arr.length / n);
+  if (size <= 0) return chunks;
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
+}
+
 // Picks `targetCount` photos spread across as many different reviews
 // as possible (round 0 = one photo from each review, round 1 = a
 // second photo from each review that still has one, and so on) rather
@@ -116,23 +131,75 @@ function selectPhotoSlots(reviews, targetCount) {
   return selected;
 }
 
-function photoSlotExt(slot) {
-  const extMatch = slot.url.match(/\.(jpg|jpeg|png|webp|gif)(?:[?&]|$)/i);
-  return extMatch ? extMatch[1].toLowerCase() : "jpg";
+// Filenames here are just "사진1.jpg", "사진2.jpg"... by slot position —
+// matching the "[사진 삽입: N]" marker number directly, so there's no
+// separate lookup needed between the draft text and the files. This is
+// deliberately NOT the same naming scheme startPlacePhotoDownload (in
+// background.js, the standalone "리뷰 사진 전체 다운로드" button) uses —
+// that one downloads every photo from every collected review and needs
+// the reviewer/index info to avoid collisions; this only ever covers
+// the small set of slots actually selected for one blog post, and the
+// photos here are re-encoded (see processPhotoBlob below), not the
+// original files, so reusing that naming would be misleading anyway.
+function simplePhotoFilename(index) {
+  return `사진${index + 1}.jpg`;
 }
 
-// Matches startPlacePhotoDownload's naming in background.js, so a file
-// a user already has from "리뷰 사진 전체 다운로드" and one that comes
-// out of the ZIP below share the same basename.
-function photoSlotBasename(slot) {
-  return `${String(slot.reviewIndex + 1).padStart(3, "0")}_${sanitizeForFilename(slot.nickname) || "익명"}_${
-    slot.photoIndex + 1
-  }.${photoSlotExt(slot)}`;
+// Every blog photo is resized/cropped to the same square and run
+// through a mild auto-enhance filter — requested after the first
+// version shipped the review photos exactly as uploaded, which come
+// in wildly different sizes/aspect ratios and vary a lot in exposure
+// since they're casual phone shots from different visitors. Built on
+// Canvas 2D (createImageBitmap + ctx.filter), which only works on
+// image bytes already fetched as a Blob — never on an <img src> tag
+// pointed at the remote URL, since drawing a cross-origin <img> taints
+// the canvas and blocks reading it back out; a fetched Blob carries no
+// such restriction regardless of origin.
+const BLOG_PHOTO_SIZE = 1080;
+const BLOG_PHOTO_FILTER = "contrast(1.08) saturate(1.15) brightness(1.04)";
+
+async function processPhotoBlob(rawBlob, targetSize) {
+  const bitmap = await createImageBitmap(rawBlob);
+  const canvas = document.createElement("canvas");
+  canvas.width = targetSize;
+  canvas.height = targetSize;
+  const ctx = canvas.getContext("2d");
+  // "Cover" crop: scale so the shorter side fills targetSize, then
+  // center-crop the overflow on the longer side — keeps portrait and
+  // landscape phone photos all coming out the same square size
+  // instead of stretching or letterboxing either kind.
+  const scale = Math.max(targetSize / bitmap.width, targetSize / bitmap.height);
+  const drawWidth = bitmap.width * scale;
+  const drawHeight = bitmap.height * scale;
+  ctx.filter = BLOG_PHOTO_FILTER;
+  ctx.drawImage(bitmap, (targetSize - drawWidth) / 2, (targetSize - drawHeight) / 2, drawWidth, drawHeight);
+  bitmap.close();
+  return await new Promise((resolve, reject) =>
+    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("toBlob 실패"))), "image/jpeg", 0.88)
+  );
 }
 
-function photoSlotFilename(slot) {
-  const folder = sanitizeForFilename(slot.placeName) || "플레이스";
-  return `네이버플레이스사진/${folder}/${photoSlotBasename(slot)}`;
+// Mutates `processedArr` in place (index i -> { blob, url } or null on
+// failure), keyed by position in `photoSlots`. Takes the array as a
+// parameter rather than touching a module-level variable because each
+// draft card now keeps its own processed-photo cache (scope.processedPhotos)
+// — with multiple drafts generated in one run, a single shared cache
+// would mix up photos between unrelated posts.
+async function ensureProcessedPhotos(processedArr, photoSlots, onProgress) {
+  for (let i = 0; i < photoSlots.length; i++) {
+    if (processedArr[i]) continue;
+    try {
+      const res = await fetch(photoSlots[i].url);
+      if (!res.ok) throw new Error(String(res.status));
+      const rawBlob = await res.blob();
+      const outBlob = await processPhotoBlob(rawBlob, BLOG_PHOTO_SIZE);
+      processedArr[i] = { blob: outBlob, url: URL.createObjectURL(outBlob) };
+    } catch (err) {
+      processedArr[i] = null;
+    }
+    if (onProgress) onProgress(i + 1, photoSlots.length);
+  }
+  return processedArr;
 }
 
 function parseReviewsInput() {
@@ -143,8 +210,7 @@ function parseReviewsInput() {
     .filter((line) => line.length > 0);
 }
 
-function renderChips(containerId, items, className) {
-  const container = document.getElementById(containerId);
+function renderChips(container, items, className) {
   container.innerHTML = "";
   if (!items || items.length === 0) {
     container.innerHTML = '<span style="color:#9ca3af;font-size:12px;">없음</span>';
@@ -158,14 +224,7 @@ function renderChips(containerId, items, className) {
   });
 }
 
-// Holds the most recent generation result so renderPreview() can pull
-// photoSlots/photoCaptions back out after the user edits draftOutput
-// by hand (the textarea only ever holds plain text with [사진 삽입: N]
-// markers — it has nowhere to carry which photo each N refers to).
-let lastResult = null;
-
-function renderTitles(titles) {
-  const container = document.getElementById("titlesList");
+function renderTitles(container, titles) {
   container.innerHTML = "";
   if (!titles || titles.length === 0) {
     container.innerHTML = '<span style="color:#9ca3af;font-size:12px;">없음</span>';
@@ -193,69 +252,145 @@ function renderTitles(titles) {
   });
 }
 
-async function handleCopyHashtags() {
-  const hashtags = (lastResult && lastResult.hashtags) || [];
-  if (hashtags.length === 0) {
-    setStatus("해시태그가 없습니다.", true);
-    return;
-  }
-  try {
-    await navigator.clipboard.writeText(hashtags.join(" "));
-    setStatus("해시태그를 복사했습니다.");
-  } catch (err) {
-    setStatus("복사에 실패했습니다 — 직접 선택해서 복사하세요.", true);
-  }
+// Builds one draft's two cards (결과 + 블로그용 미리보기) as a detached
+// DOM subtree, appends it to #resultsContainer, and returns a `scope`
+// object every render/handler below takes as its first argument —
+// scope.el is the subtree (so all lookups are container.querySelector,
+// never a page-wide id — multiple drafts would otherwise collide on
+// the same id), and scope.result/scope.processedPhotos hold this one
+// draft's own state.
+function createDraftCard(num, total) {
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = `
+    <div class="card">
+      <h2>원고 #${num}${total > 1 ? ` / ${total}` : ""}</h2>
+      <div class="error-line file-hint" style="color:#dc2626;"></div>
+      <div class="keyword-group">
+        <div class="label">제목 추천 (검색 많이 되는 키워드 조합)</div>
+        <div class="titlesList"></div>
+      </div>
+      <div class="keyword-group">
+        <div class="label">필수 키워드</div>
+        <div class="requiredKeywords"></div>
+      </div>
+      <div class="keyword-group">
+        <div class="label">좋은 키워드</div>
+        <div class="goodKeywords"></div>
+      </div>
+      <div class="keyword-group">
+        <div class="label">시그니처 메뉴</div>
+        <div class="signatureMenuOut"></div>
+      </div>
+      <label style="margin-top:8px;">블로그 원고 (수정 가능, 본문 중 "[사진 삽입: N]"은 아래 사진 배치 가이드의 N번 사진을 끼워 넣을 자리입니다)</label>
+      <textarea class="draftOutput" rows="14"></textarea>
+      <div class="row2" style="margin-bottom:0;">
+        <button type="button" class="copyDraftBtn">클립보드에 복사</button>
+        <button type="button" class="downloadZipBtn">원고+사진 ZIP 다운로드</button>
+      </div>
+      <div class="downloadZipStatus file-hint" style="margin-top:4px;"></div>
+      <div class="keyword-group" style="margin-top:16px;">
+        <div class="label">해시태그</div>
+        <div class="hashtagsOut"></div>
+        <button type="button" class="copyHashtagsBtn" style="margin-top:6px;">해시태그 전체 복사</button>
+      </div>
+      <div class="photoGuideSection hidden" style="margin-top:16px;">
+        <label>사진 배치 가이드</label>
+        <div class="file-hint">
+          본문의 "[사진 삽입: N]" 자리에 아래 N번 사진이 들어갑니다. 아래 미리보기/ZIP의 사진은 원본 그대로가 아니라 1080×1080 정사각형으로 맞추고 살짝 보정(밝기·대비·채도)한 버전이며, 파일명도 "사진1.jpg", "사진2.jpg"처럼 간단하게 바뀝니다.
+        </div>
+        <div class="photoGuideList"></div>
+      </div>
+    </div>
+    <div class="card hidden previewCard">
+      <h2>원고 #${num} 블로그용 미리보기 (복사해서 붙여넣기)</h2>
+      <div class="file-hint">
+        아래 내용을 "전체 선택" 버튼으로 선택하고 Ctrl+C(맥: Cmd+C)로 복사한 뒤, 네이버 블로그 글쓰기 화면에 붙여넣으면(Ctrl+V) 텍스트와 사진이 함께 들어갑니다. 완전 자동 발행은 아니지만 사진을 하나씩 끌어넣을 필요가 없어집니다. 붙여넣은 뒤 줄바꿈·사진 크기 등은 블로그 에디터에서 한 번 더 다듬어주세요.
+      </div>
+      <div class="row2" style="margin-bottom:10px;">
+        <button type="button" class="refreshPreviewBtn">미리보기 새로고침 (원고 수정 후 다시 반영)</button>
+        <button type="button" class="selectPreviewBtn primaryBtn">전체 선택하기</button>
+      </div>
+      <div class="blogPreview blog-preview" contenteditable="true"></div>
+    </div>
+  `;
+  document.getElementById("resultsContainer").appendChild(wrapper);
+
+  const scope = { el: wrapper, num, total, result: null, processedPhotos: [] };
+
+  wrapper.querySelector(".copyDraftBtn").addEventListener("click", () => handleCopyDraft(scope));
+  wrapper.querySelector(".downloadZipBtn").addEventListener("click", () => handleDownloadZip(scope));
+  wrapper.querySelector(".copyHashtagsBtn").addEventListener("click", () => handleCopyHashtags(scope));
+  wrapper.querySelector(".refreshPreviewBtn").addEventListener("click", () => renderPreview(scope));
+  wrapper.querySelector(".selectPreviewBtn").addEventListener("click", () => handleSelectPreview(scope));
+
+  return scope;
 }
 
-function renderResult(result) {
-  lastResult = result;
-  document.getElementById("resultCard").classList.remove("hidden");
-  renderTitles(result.titles);
-  renderChips("requiredKeywords", result.requiredKeywords, "required");
-  renderChips("goodKeywords", result.goodKeywords, "good");
-  renderChips("signatureMenuOut", result.signatureMenu, "menu");
-  renderChips("hashtagsOut", result.hashtags, "hashtag");
-  document.getElementById("draftOutput").value = result.draft || "";
-
-  const photoSection = document.getElementById("photoGuideSection");
-  const photoSlots = Array.isArray(result.photoSlots) ? result.photoSlots : [];
-  if (photoSlots.length > 0) {
-    photoSection.classList.remove("hidden");
-    const list = document.getElementById("photoGuideList");
-    list.innerHTML = "";
-    photoSlots.forEach((slot, i) => {
-      const caption = (result.photoCaptions && result.photoCaptions[i]) || "";
-      const row = document.createElement("div");
-      row.className = "photo-guide-item";
-      row.innerHTML = `
-        <span class="num">#${i + 1}</span>
-        <img src="${slot.url}" alt="사진 ${i + 1}" loading="lazy" />
-        <div>
-          <div class="caption">${caption ? caption.replace(/</g, "&lt;") : "(설명 없음)"}</div>
-          <div class="meta">${photoSlotFilename(slot).replace(/</g, "&lt;")}</div>
-        </div>
-      `;
-      list.appendChild(row);
-    });
-  } else {
+function renderPhotoGuide(scope, photoSlots, photoCaptions) {
+  const photoSection = scope.el.querySelector(".photoGuideSection");
+  if (photoSlots.length === 0) {
     photoSection.classList.add("hidden");
+    return;
+  }
+  photoSection.classList.remove("hidden");
+  const list = scope.el.querySelector(".photoGuideList");
+  list.innerHTML = "";
+  photoSlots.forEach((slot, i) => {
+    const caption = photoCaptions[i] || "";
+    const previewUrl = (scope.processedPhotos[i] && scope.processedPhotos[i].url) || slot.url;
+    const row = document.createElement("div");
+    row.className = "photo-guide-item";
+    row.innerHTML = `
+      <span class="num">#${i + 1}</span>
+      <img src="${previewUrl}" alt="사진 ${i + 1}" loading="lazy" />
+      <div>
+        <div class="caption">${caption ? caption.replace(/</g, "&lt;") : "(설명 없음)"}</div>
+        <div class="meta">ZIP에 "${simplePhotoFilename(i)}"로 들어있습니다${
+      scope.processedPhotos[i] ? "" : " (보정 실패 — 원본으로 대체됩니다)"
+    }</div>
+      </div>
+    `;
+    list.appendChild(row);
+  });
+}
+
+async function renderDraft(scope, result) {
+  scope.result = result;
+  renderTitles(scope.el.querySelector(".titlesList"), result.titles);
+  renderChips(scope.el.querySelector(".requiredKeywords"), result.requiredKeywords, "required");
+  renderChips(scope.el.querySelector(".goodKeywords"), result.goodKeywords, "good");
+  renderChips(scope.el.querySelector(".signatureMenuOut"), result.signatureMenu, "menu");
+  renderChips(scope.el.querySelector(".hashtagsOut"), result.hashtags, "hashtag");
+  scope.el.querySelector(".draftOutput").value = result.draft || "";
+
+  const photoSlots = Array.isArray(result.photoSlots) ? result.photoSlots : [];
+  const photoCaptions = Array.isArray(result.photoCaptions) ? result.photoCaptions : [];
+  scope.processedPhotos = [];
+  renderPhotoGuide(scope, photoSlots, photoCaptions);
+
+  if (photoSlots.length > 0) {
+    const label = scope.total > 1 ? `원고 #${scope.num} 사진 보정 중` : "사진 보정 중";
+    await ensureProcessedPhotos(scope.processedPhotos, photoSlots, (done, total) => {
+      setStatus(`${label}... (${done} / ${total})`);
+    });
+    renderPhotoGuide(scope, photoSlots, photoCaptions);
   }
 
   if (result.parseFailed) {
-    setStatus("AI 응답을 정해진 형식으로 해석하지 못해 원문 그대로 표시합니다 — 키워드 분류는 비어 있습니다.", true);
+    scope.el.querySelector(".error-line").textContent =
+      "AI 응답을 정해진 형식으로 해석하지 못해 원문 그대로 표시합니다 — 키워드 분류는 비어 있습니다.";
   }
 
-  renderPreview();
+  renderPreview(scope);
 }
 
-// Rebuilds the "블로그용 미리보기" block from whatever is currently in
-// draftOutput (so manual edits are reflected) plus the photo slots/
-// captions from the last generation. "[사진 삽입: N]" markers become a
-// real <figure><img>+caption> in place — this is what makes the
-// preview copy-paste as text-and-images together into a rich text
-// editor like Naver Blog's, rather than just plain text with bracket
-// placeholders.
-function buildPreviewNode(draftText, photoSlots, photoCaptions, hashtags) {
+// Rebuilds a draft's "블로그용 미리보기" block from whatever is currently
+// in its draftOutput (so manual edits are reflected) plus that draft's
+// own photo slots/captions. "[사진 삽입: N]" markers become a real
+// <figure><img>+caption> in place — this is what makes the preview
+// copy-paste as text-and-images together into a rich text editor like
+// Naver Blog's, rather than just plain text with bracket placeholders.
+function buildPreviewNode(draftText, photoSlots, photoCaptions, hashtags, processedPhotos) {
   const container = document.createElement("div");
   const markerPattern = /\[사진\s*삽입\s*:\s*(\d+)\]/g;
 
@@ -278,7 +413,7 @@ function buildPreviewNode(draftText, photoSlots, photoCaptions, hashtags) {
     if (slot) {
       const figure = document.createElement("figure");
       const img = document.createElement("img");
-      img.src = slot.url;
+      img.src = (processedPhotos[num - 1] && processedPhotos[num - 1].url) || slot.url;
       img.alt = `사진 ${num}`;
       figure.appendChild(img);
       const caption = photoCaptions[num - 1];
@@ -303,24 +438,25 @@ function buildPreviewNode(draftText, photoSlots, photoCaptions, hashtags) {
   return container;
 }
 
-function renderPreview() {
-  const draftText = document.getElementById("draftOutput").value || "";
+function renderPreview(scope) {
+  const draftText = scope.el.querySelector(".draftOutput").value || "";
+  const previewCard = scope.el.querySelector(".previewCard");
   if (!draftText.trim()) {
-    document.getElementById("previewCard").classList.add("hidden");
+    previewCard.classList.add("hidden");
     return;
   }
-  const photoSlots = lastResult && Array.isArray(lastResult.photoSlots) ? lastResult.photoSlots : [];
-  const photoCaptions = lastResult && Array.isArray(lastResult.photoCaptions) ? lastResult.photoCaptions : [];
-  const hashtags = lastResult && Array.isArray(lastResult.hashtags) ? lastResult.hashtags : [];
-  const node = buildPreviewNode(draftText, photoSlots, photoCaptions, hashtags);
-  const container = document.getElementById("blogPreview");
+  const photoSlots = scope.result && Array.isArray(scope.result.photoSlots) ? scope.result.photoSlots : [];
+  const photoCaptions = scope.result && Array.isArray(scope.result.photoCaptions) ? scope.result.photoCaptions : [];
+  const hashtags = scope.result && Array.isArray(scope.result.hashtags) ? scope.result.hashtags : [];
+  const node = buildPreviewNode(draftText, photoSlots, photoCaptions, hashtags, scope.processedPhotos);
+  const container = scope.el.querySelector(".blogPreview");
   container.innerHTML = "";
   container.appendChild(node);
-  document.getElementById("previewCard").classList.remove("hidden");
+  previewCard.classList.remove("hidden");
 }
 
-function handleSelectPreview() {
-  const el = document.getElementById("blogPreview");
+function handleSelectPreview(scope) {
+  const el = scope.el.querySelector(".blogPreview");
   el.focus();
   const range = document.createRange();
   range.selectNodeContents(el);
@@ -330,93 +466,8 @@ function handleSelectPreview() {
   setStatus("전체 선택했습니다 — 이제 Ctrl+C(맥: Cmd+C)로 복사한 뒤 블로그 글쓰기 화면에 Ctrl+V로 붙여넣으세요.");
 }
 
-async function handleGenerate() {
-  const storeName = document.getElementById("storeNameInput").value.trim();
-  const storeArea = document.getElementById("storeAreaInput").value.trim();
-  const storeCategory = document.getElementById("storeCategoryInput").value.trim();
-  const signatureMenuHint = document.getElementById("signatureMenuInput").value.trim();
-  const apiKey = document.getElementById("apiKeyInput").value.trim();
-  const model = document.getElementById("modelSelect").value;
-  const reviews = parseReviewsInput();
-
-  if (!apiKey) {
-    setStatus("먼저 Gemini API 키를 입력하고 저장하세요.", true);
-    return;
-  }
-  if (!storeName) {
-    setStatus("상호명을 입력하세요.", true);
-    return;
-  }
-  if (reviews.length === 0) {
-    setStatus("리뷰를 한 줄에 하나씩 붙여넣으세요.", true);
-    return;
-  }
-
-  let photoSlots = [];
-  if (document.getElementById("includePhotosCheckbox").checked) {
-    const targetCount = Math.max(1, parseInt(document.getElementById("photoCountInput").value, 10) || 15);
-    if (lastLoadedReviews.length === 0) {
-      setStatus('사진을 쓰려면 먼저 "수집한 플레이스 리뷰 불러오기"로 리뷰를 불러오세요 (직접 붙여넣은 텍스트에는 사진 정보가 없습니다).', true);
-      return;
-    }
-    photoSlots = selectPhotoSlots(lastLoadedReviews, targetCount);
-    if (photoSlots.length === 0) {
-      setStatus("불러온 리뷰에 사진이 없습니다. 체크를 해제하고 다시 시도하세요.", true);
-      return;
-    }
-  }
-
-  await chrome.storage.local.set({
-    blogApiKey: apiKey,
-    blogModel: model,
-    blogStoreName: storeName,
-    blogStoreArea: storeArea,
-    blogStoreCategory: storeCategory,
-    blogSignatureMenu: signatureMenuHint,
-  });
-
-  const generateBtn = document.getElementById("generateBtn");
-  generateBtn.disabled = true;
-  setStatus(
-    photoSlots.length > 0
-      ? `AI가 리뷰 ${reviews.length}건 + 사진 ${photoSlots.length}장을 분석해 원고를 만드는 중입니다...`
-      : `AI가 리뷰 ${reviews.length}건을 분석해 원고를 만드는 중입니다...`
-  );
-
-  const response = await chrome.runtime.sendMessage({
-    type: "GENERATE_BLOG_DRAFT",
-    storeName,
-    storeArea,
-    storeCategory,
-    signatureMenuHint,
-    reviews,
-    apiKey,
-    model,
-    photoSlots,
-  });
-
-  generateBtn.disabled = false;
-
-  if (!response || !response.ok) {
-    const reason = response && response.reason;
-    if (reason === "already_running") {
-      setStatus("이미 생성 중입니다. 잠시 후 다시 시도하세요.", true);
-    } else if (reason === "no_api_key") {
-      setStatus("API 키가 필요합니다.", true);
-    } else if (reason === "no_reviews") {
-      setStatus("리뷰를 입력하세요.", true);
-    } else {
-      setStatus(`생성 실패: ${(response && response.error) || "알 수 없는 오류"}`, true);
-    }
-    return;
-  }
-
-  setStatus("완료되었습니다. 발행 전 내용을 꼭 직접 검토하세요.");
-  renderResult(response.result);
-}
-
-async function handleCopyDraft() {
-  const text = document.getElementById("draftOutput").value;
+async function handleCopyDraft(scope) {
+  const text = scope.el.querySelector(".draftOutput").value;
   try {
     await navigator.clipboard.writeText(text);
     setStatus("클립보드에 복사했습니다.");
@@ -425,34 +476,58 @@ async function handleCopyDraft() {
   }
 }
 
+async function handleCopyHashtags(scope) {
+  const hashtags = (scope.result && scope.result.hashtags) || [];
+  if (hashtags.length === 0) {
+    setStatus("해시태그가 없습니다.", true);
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(hashtags.join(" "));
+    setStatus("해시태그를 복사했습니다.");
+  } catch (err) {
+    setStatus("복사에 실패했습니다 — 직접 선택해서 복사하세요.", true);
+  }
+}
+
 // Builds one zip containing 블로그원고.txt (the draft, with each
 // "[사진 삽입: N]" marker rewritten in place to name the exact photo
 // file it refers to — so reading the txt next to the extracted photos
 // is enough, no separate guide needed) plus every referenced photo
 // under that same filename. Runs entirely in this tab (not the
-// background service worker) since, unlike the earlier per-photo
+// background service worker) since, unlike the per-photo bulk
 // downloader, there's nothing here that needs to survive the popup
 // closing — this page stays open for as long as the zip takes to
 // build.
-async function handleDownloadZip() {
-  const draftText = document.getElementById("draftOutput").value || "";
+async function handleDownloadZip(scope) {
+  const draftText = scope.el.querySelector(".draftOutput").value || "";
   if (!draftText.trim()) {
     setStatus("먼저 원고를 생성하세요.", true);
     return;
   }
 
-  const photoSlots = lastResult && Array.isArray(lastResult.photoSlots) ? lastResult.photoSlots : [];
-  const photoCaptions = lastResult && Array.isArray(lastResult.photoCaptions) ? lastResult.photoCaptions : [];
-  const titles = lastResult && Array.isArray(lastResult.titles) ? lastResult.titles : [];
-  const hashtags = lastResult && Array.isArray(lastResult.hashtags) ? lastResult.hashtags : [];
+  const result = scope.result || {};
+  const photoSlots = Array.isArray(result.photoSlots) ? result.photoSlots : [];
+  const photoCaptions = Array.isArray(result.photoCaptions) ? result.photoCaptions : [];
+  const titles = Array.isArray(result.titles) ? result.titles : [];
+  const hashtags = Array.isArray(result.hashtags) ? result.hashtags : [];
   const storeName = document.getElementById("storeNameInput").value.trim();
-  const statusEl = document.getElementById("downloadZipStatus");
-  const btn = document.getElementById("downloadZipBtn");
+  const statusEl = scope.el.querySelector(".downloadZipStatus");
+  const btn = scope.el.querySelector(".downloadZipBtn");
 
   btn.disabled = true;
-  statusEl.textContent = photoSlots.length > 0 ? `사진 ${photoSlots.length}장 내려받는 중...` : "압축 파일 만드는 중...";
+  statusEl.textContent = photoSlots.length > 0 ? `사진 ${photoSlots.length}장 보정하는 중...` : "압축 파일 만드는 중...";
 
   try {
+    // Reuses whatever renderDraft already processed (resized + color
+    // corrected) — only re-processes a slot here if that somehow never
+    // ran or failed the first time.
+    if (photoSlots.length > 0) {
+      await ensureProcessedPhotos(scope.processedPhotos, photoSlots, (done, total) => {
+        statusEl.textContent = `사진 보정하는 중... (${done} / ${total})`;
+      });
+    }
+
     const zip = new JSZip();
 
     const bodyWithPhotoNames = draftText.replace(/\[사진\s*삽입\s*:\s*(\d+)\]/g, (whole, numStr) => {
@@ -460,7 +535,7 @@ async function handleDownloadZip() {
       const slot = photoSlots[num - 1];
       if (!slot) return whole;
       const caption = photoCaptions[num - 1];
-      return `[사진: ${photoSlotBasename(slot)}${caption ? ` — ${caption}` : ""}]`;
+      return `[사진: ${simplePhotoFilename(num - 1)}${caption ? ` — ${caption}` : ""}]`;
     });
 
     const titleBlock = titles.length > 0 ? `[제목 추천]\n${titles.map((t, i) => `${i + 1}. ${t}`).join("\n")}\n\n` : "";
@@ -470,26 +545,28 @@ async function handleDownloadZip() {
 
     let failed = 0;
     for (let i = 0; i < photoSlots.length; i++) {
-      const slot = photoSlots[i];
-      try {
-        const res = await fetch(slot.url);
-        if (!res.ok) throw new Error(String(res.status));
-        const blob = await res.blob();
-        zip.file(photoSlotBasename(slot), blob);
-      } catch (err) {
-        failed++;
+      const processed = scope.processedPhotos[i];
+      if (processed) {
+        zip.file(simplePhotoFilename(i), processed.blob);
+      } else {
+        // Processing failed for this slot — fall back to the original
+        // file as-is rather than dropping it from the zip entirely.
+        try {
+          const res = await fetch(photoSlots[i].url);
+          if (!res.ok) throw new Error(String(res.status));
+          zip.file(simplePhotoFilename(i), await res.blob());
+        } catch (err) {
+          failed++;
+        }
       }
-      statusEl.textContent = `사진 내려받는 중... (${i + 1} / ${photoSlots.length}${failed ? `, 실패 ${failed}` : ""})`;
     }
 
     statusEl.textContent = "압축 파일 만드는 중...";
     const zipBlob = await zip.generateAsync({ type: "blob" });
     const url = URL.createObjectURL(zipBlob);
-    const dateStr = new Date()
-      .toISOString()
-      .slice(0, 10)
-      .replace(/-/g, "");
-    const zipFilename = `${sanitizeForFilename(storeName) || "블로그원고"}_${dateStr}.zip`;
+    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    const numSuffix = scope.total > 1 ? `_${scope.num}` : "";
+    const zipFilename = `${sanitizeForFilename(storeName) || "블로그원고"}${numSuffix}_${dateStr}.zip`;
 
     await chrome.downloads.download({ url, filename: zipFilename, saveAs: true });
     setTimeout(() => URL.revokeObjectURL(url), 60000);
@@ -507,17 +584,132 @@ async function handleDownloadZip() {
   }
 }
 
+// Splits the loaded reviews (and, if photos are on, the loaded review
+// objects) into `draftCount` chunks and runs one GENERATE_BLOG_DRAFT
+// call per chunk in sequence, so each resulting post draws on
+// different reviews/photos instead of every post rehashing the same
+// handful. Requested after collecting 151 reviews / ~400 photos but
+// only ever getting one post out of them. Chunk i's review text and
+// chunk i's photos come from independently-sized splits of the
+// (textarea lines) and (lastLoadedReviews objects) arrays respectively
+// — both were filled in the same order by handleLoadCollected, so they
+// line up well in practice, though a reviewer who hand-edits the
+// textarea afterward can throw that off slightly; not worth the extra
+// bookkeeping to guarantee exactly, since the AI step downstream is
+// already approximate.
+async function handleGenerate() {
+  const storeName = document.getElementById("storeNameInput").value.trim();
+  const storeArea = document.getElementById("storeAreaInput").value.trim();
+  const storeCategory = document.getElementById("storeCategoryInput").value.trim();
+  const signatureMenuHint = document.getElementById("signatureMenuInput").value.trim();
+  const apiKey = document.getElementById("apiKeyInput").value.trim();
+  const model = document.getElementById("modelSelect").value;
+  const reviewLines = parseReviewsInput();
+  const includePhotos = document.getElementById("includePhotosCheckbox").checked;
+  const photoCountPerDraft = Math.max(1, parseInt(document.getElementById("photoCountInput").value, 10) || 15);
+  const requestedDraftCount = Math.max(1, Math.min(20, parseInt(document.getElementById("draftCountInput").value, 10) || 1));
+
+  if (!apiKey) {
+    setStatus("먼저 Gemini API 키를 입력하고 저장하세요.", true);
+    return;
+  }
+  if (!storeName) {
+    setStatus("상호명을 입력하세요.", true);
+    return;
+  }
+  if (reviewLines.length === 0) {
+    setStatus("리뷰를 한 줄에 하나씩 붙여넣으세요.", true);
+    return;
+  }
+  if (includePhotos && lastLoadedReviews.length === 0) {
+    setStatus('사진을 쓰려면 먼저 "수집한 플레이스 리뷰 불러오기"로 리뷰를 불러오세요 (직접 붙여넣은 텍스트에는 사진 정보가 없습니다).', true);
+    return;
+  }
+
+  const reviewChunks = chunkArray(reviewLines, requestedDraftCount);
+  const photoChunks = includePhotos ? chunkArray(lastLoadedReviews, requestedDraftCount) : [];
+  const draftCount = reviewChunks.length;
+
+  await chrome.storage.local.set({
+    blogApiKey: apiKey,
+    blogModel: model,
+    blogStoreName: storeName,
+    blogStoreArea: storeArea,
+    blogStoreCategory: storeCategory,
+    blogSignatureMenu: signatureMenuHint,
+  });
+
+  document.getElementById("resultsContainer").innerHTML = "";
+
+  const generateBtn = document.getElementById("generateBtn");
+  generateBtn.disabled = true;
+
+  if (draftCount < requestedDraftCount) {
+    setStatus(`리뷰 수가 적어서 원고 ${draftCount}개로 조정했습니다 (요청: ${requestedDraftCount}개).`);
+  }
+
+  let succeeded = 0;
+  for (let i = 0; i < draftCount; i++) {
+    const chunkReviewLines = reviewChunks[i];
+    let photoSlots = [];
+    if (includePhotos) {
+      photoSlots = selectPhotoSlots(photoChunks[i] || [], photoCountPerDraft);
+    }
+
+    setStatus(
+      draftCount > 1
+        ? `원고 ${i + 1}/${draftCount} 생성 중 (리뷰 ${chunkReviewLines.length}건${
+            photoSlots.length ? `, 사진 ${photoSlots.length}장` : ""
+          })...`
+        : `AI가 리뷰 ${chunkReviewLines.length}건${photoSlots.length ? ` + 사진 ${photoSlots.length}장` : ""}을 분석해 원고를 만드는 중입니다...`
+    );
+
+    const response = await chrome.runtime.sendMessage({
+      type: "GENERATE_BLOG_DRAFT",
+      storeName,
+      storeArea,
+      storeCategory,
+      signatureMenuHint,
+      reviews: chunkReviewLines,
+      apiKey,
+      model,
+      photoSlots,
+    });
+
+    const scope = createDraftCard(i + 1, draftCount);
+
+    if (!response || !response.ok) {
+      const reason = response && response.reason;
+      let msg;
+      if (reason === "already_running") msg = "이미 다른 생성 작업이 진행 중입니다.";
+      else if (reason === "no_api_key") msg = "API 키가 필요합니다.";
+      else if (reason === "no_reviews") msg = "이 구간에 리뷰가 없습니다.";
+      else msg = `생성 실패: ${(response && response.error) || "알 수 없는 오류"}`;
+      scope.el.querySelector(".error-line").textContent = msg;
+      setStatus(`원고 ${i + 1}/${draftCount} 생성 실패 (${msg}) — 나머지는 계속 진행합니다.`, true);
+      continue;
+    }
+
+    await renderDraft(scope, response.result);
+    succeeded++;
+  }
+
+  generateBtn.disabled = false;
+  setStatus(
+    draftCount > 1
+      ? `완료: 원고 ${succeeded}/${draftCount}개 생성됨. 발행 전 각각 꼭 검토하세요.`
+      : succeeded > 0
+      ? "완료되었습니다. 발행 전 내용을 꼭 직접 검토하세요."
+      : "생성에 실패했습니다."
+  );
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   loadSettings();
   document.getElementById("saveApiKeyBtn").addEventListener("click", saveApiKey);
   document.getElementById("loadCollectedBtn").addEventListener("click", handleLoadCollected);
   document.getElementById("generateBtn").addEventListener("click", handleGenerate);
-  document.getElementById("copyDraftBtn").addEventListener("click", handleCopyDraft);
-  document.getElementById("downloadZipBtn").addEventListener("click", handleDownloadZip);
-  document.getElementById("copyHashtagsBtn").addEventListener("click", handleCopyHashtags);
   document.getElementById("includePhotosCheckbox").addEventListener("change", (e) => {
     document.getElementById("photoCountRow").style.display = e.target.checked ? "flex" : "none";
   });
-  document.getElementById("refreshPreviewBtn").addEventListener("click", renderPreview);
-  document.getElementById("selectPreviewBtn").addEventListener("click", handleSelectPreview);
 });
