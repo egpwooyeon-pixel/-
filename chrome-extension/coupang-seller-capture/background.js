@@ -1313,39 +1313,63 @@ ${signatureMenuHint ? `\n[참고: 알려준 시그니처 메뉴] ${signatureMenu
   return parts;
 }
 
+// 503 ("model is currently experiencing high demand... usually
+// temporary") is Google's own server being briefly overloaded, not
+// anything wrong with the request — confirmed live, and worth a couple
+// of automatic retries with backoff, especially now that a batch of
+// 20+ drafts/posts means 20+ separate calls where any single one can
+// hit this transient state. 429 (rate limit) deliberately isn't
+// retried here: it means this request itself is the one over the
+// free-tier quota, and retrying quickly within the same run is more
+// likely to just trip it again than to help.
+const GEMINI_RETRYABLE_STATUSES = new Set([503]);
+const GEMINI_RETRY_DELAYS_MS = [2000, 5000];
+
 async function callGeminiForBlogDraft({ apiKey, model, parts }) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
     model
   )}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts }],
-    }),
-  });
+  let lastError = null;
+  for (let attempt = 0; attempt <= GEMINI_RETRY_DELAYS_MS.length; attempt++) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts }],
+      }),
+    });
 
-  if (!res.ok) {
-    let detail = "";
-    try {
-      const errJson = await res.json();
-      detail = (errJson && errJson.error && errJson.error.message) || "";
-    } catch (err) {
-      // response body wasn't JSON — leave detail blank
+    if (!res.ok) {
+      let detail = "";
+      try {
+        const errJson = await res.json();
+        detail = (errJson && errJson.error && errJson.error.message) || "";
+      } catch (err) {
+        // response body wasn't JSON — leave detail blank
+      }
+      const rateLimited = res.status === 429 ? " (무료 티어 호출 한도 초과일 수 있습니다 — 잠시 후 다시 시도하세요)" : "";
+      lastError = new Error(`API 오류 (${res.status})${detail ? ": " + detail : ""}${rateLimited}`);
+
+      if (GEMINI_RETRYABLE_STATUSES.has(res.status) && attempt < GEMINI_RETRY_DELAYS_MS.length) {
+        await new Promise((resolve) => setTimeout(resolve, GEMINI_RETRY_DELAYS_MS[attempt]));
+        continue;
+      }
+      throw lastError;
     }
-    const rateLimited = res.status === 429 ? " (무료 티어 호출 한도 초과일 수 있습니다 — 잠시 후 다시 시도하세요)" : "";
-    throw new Error(`API 오류 (${res.status})${detail ? ": " + detail : ""}${rateLimited}`);
+
+    const data = await res.json();
+    const candidate = data && data.candidates && data.candidates[0];
+    const text =
+      candidate && candidate.content && candidate.content.parts && candidate.content.parts[0] && candidate.content.parts[0].text;
+    if (!text) {
+      const blockReason = data && data.promptFeedback && data.promptFeedback.blockReason;
+      throw new Error(blockReason ? `Gemini가 응답을 차단했습니다 (${blockReason})` : "API 응답에서 텍스트를 찾지 못했습니다.");
+    }
+    return text;
   }
 
-  const data = await res.json();
-  const candidate = data && data.candidates && data.candidates[0];
-  const text = candidate && candidate.content && candidate.content.parts && candidate.content.parts[0] && candidate.content.parts[0].text;
-  if (!text) {
-    const blockReason = data && data.promptFeedback && data.promptFeedback.blockReason;
-    throw new Error(blockReason ? `Gemini가 응답을 차단했습니다 (${blockReason})` : "API 응답에서 텍스트를 찾지 못했습니다.");
-  }
-  return text;
+  throw lastError;
 }
 
 // The model is asked for pure JSON but may still wrap it in a markdown
