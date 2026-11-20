@@ -372,65 +372,59 @@ async function handlePlaceReviewDownload() {
   }
 }
 
-function sanitizeForFilename(s) {
-  return (s || "").replace(/[\\/:*?"<>|]/g, "_").trim();
-}
-
-// Downloads every photo attached to the collected reviews, one file
-// at a time with a short pause between each (chrome.downloads.download
-// itself doesn't need that, but spacing them out keeps this from
-// firing dozens of requests at pstatic.net in the same instant). Each
-// review's photos go under 네이버플레이스사진/<업체명>/<리뷰번호>_<작성자>_<사진번호>.<확장자>
-// in the browser's normal downloads folder; failures on individual
-// photos are skipped rather than aborting the whole batch, since a
-// dead image URL shouldn't block the rest.
+// The actual download loop runs in background.js, not here. A popup's
+// own script is torn down the instant the popup loses focus (clicking
+// elsewhere, the OS download notification popping up, etc.) — a long
+// sequential loop living only in popup.js would stop dead after
+// whatever download was in flight, which is exactly the "only the
+// first photo downloaded" symptom this replaced. Every other
+// multi-step job in this extension (batch capture, review collection,
+// mail autosend) already runs in the background service worker for
+// the same reason; this just brings photo downloads in line with that.
 async function handlePlaceReviewPhotosDownload() {
   const { placeReviews } = await chrome.storage.local.get("placeReviews");
   const reviews = Array.isArray(placeReviews) ? placeReviews : [];
+  const totalPhotos = reviews.reduce((sum, r) => sum + (Array.isArray(r.photoUrls) ? r.photoUrls.length : 0), 0);
 
-  const jobs = [];
-  reviews.forEach((r, reviewIndex) => {
-    const urls = Array.isArray(r.photoUrls) ? r.photoUrls : [];
-    urls.forEach((url, photoIndex) => {
-      jobs.push({ url, reviewIndex, photoIndex, nickname: r.nickname, placeName: r.placeName });
-    });
-  });
-
-  if (jobs.length === 0) {
+  if (totalPhotos === 0) {
     setStatus("다운로드할 사진이 없습니다. 먼저 리뷰를 수집하세요.", "error");
     return;
   }
 
   const ok = window.confirm(
-    `사진 ${jobs.length}장을 다운로드합니다 (브라우저 다운로드 폴더 안 "네이버플레이스사진" 폴더에 저장됩니다).\n` +
-      `※ 리뷰 작성자가 올린 사진입니다 — 블로그 등에 그대로 재사용하려면 저작권상 원작성자의 허락이 필요할 수 있습니다.\n계속할까요?`
+    `사진 ${totalPhotos}장을 다운로드합니다 (브라우저 다운로드 폴더 안 "네이버플레이스사진" 폴더에 저장됩니다).\n` +
+      `※ 리뷰 작성자가 올린 사진입니다 — 블로그 등에 그대로 재사용하려면 저작권상 원작성자의 허락이 필요할 수 있습니다.\n` +
+      `팝업을 닫아도 백그라운드에서 계속 진행됩니다.\n계속할까요?`
   );
   if (!ok) return;
 
-  const folder = sanitizeForFilename(jobs[0].placeName) || "플레이스";
-  let done = 0;
-  let failed = 0;
-
-  for (const job of jobs) {
-    const extMatch = job.url.match(/\.(jpg|jpeg|png|webp|gif)(?:[?&]|$)/i);
-    const ext = extMatch ? extMatch[1].toLowerCase() : "jpg";
-    const filename = `네이버플레이스사진/${folder}/${String(job.reviewIndex + 1).padStart(3, "0")}_${
-      sanitizeForFilename(job.nickname) || "익명"
-    }_${job.photoIndex + 1}.${ext}`;
-
-    try {
-      await chrome.downloads.download({ url: job.url, filename, saveAs: false });
-    } catch (err) {
-      failed++;
-    }
-    done++;
-    if (done % 5 === 0 || done === jobs.length) {
-      setStatus(`사진 다운로드 중... (${done} / ${jobs.length}${failed ? `, 실패 ${failed}` : ""})`, "");
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150));
+  const response = await chrome.runtime.sendMessage({ type: "START_PLACE_PHOTO_DOWNLOAD", reviews });
+  if (response && response.ok === false) {
+    if (response.reason === "already_running") setStatus("이미 사진 다운로드가 진행 중입니다.", "error");
+    else setStatus("다운로드할 사진이 없습니다.", "error");
+    return;
   }
+  setStatus(`사진 다운로드를 시작했습니다 (총 ${totalPhotos}장) — 팝업을 닫아도 계속됩니다.`, "ok");
+  renderPlacePhotoDownloadStatus();
+}
 
-  setStatus(`사진 다운로드 완료: ${jobs.length - failed}장 (실패 ${failed}장)`, failed ? "error" : "ok");
+async function renderPlacePhotoDownloadStatus() {
+  const status = await chrome.runtime.sendMessage({ type: "GET_PLACE_PHOTO_DOWNLOAD_STATUS" });
+  const el = document.getElementById("placePhotoDownloadProgress");
+  if (!el) return;
+  if (!status || (!status.running && !status.total)) {
+    el.textContent = "";
+    return;
+  }
+  if (status.running) {
+    el.innerHTML = `사진 다운로드 중 — <b>${status.done}</b> / ${status.total}장${
+      status.failed ? ` (실패 ${status.failed}장)` : ""
+    }`;
+  } else if (status.error === "interrupted") {
+    el.textContent = `크롬이 확장프로그램을 잠시 재시작해 중단됐습니다 (${status.done}/${status.total}장까지 받음). 필요하면 다시 시작해주세요.`;
+  } else {
+    el.textContent = `사진 다운로드 완료: ${status.done - status.failed}장 (실패 ${status.failed}장)`;
+  }
 }
 
 async function renderPlaceReviewStatus() {
@@ -920,6 +914,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   renderNaverReviewStatus();
   renderRepeatCycleStatus();
   renderPlaceReviewStatus();
+  renderPlacePhotoDownloadStatus();
 
   if (batchStatus && batchStatus.running) {
     // The stored state says a batch is running; ping the background
@@ -934,6 +929,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (changes.naverReviewStatus) renderNaverReviewStatus();
     if (changes.repeatCycleState) renderRepeatCycleStatus();
     if (changes.placeReviewStatus) renderPlaceReviewStatus();
+    if (changes.placePhotoDownloadStatus) renderPlacePhotoDownloadStatus();
     if (changes.records) {
       renderList(Array.isArray(changes.records.newValue) ? changes.records.newValue : []);
       renderSheetSyncStatus();

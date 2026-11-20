@@ -1079,6 +1079,72 @@ async function startPlaceReviewCollection(tabId) {
   }
 }
 
+// --- 네이버 플레이스 리뷰 사진 다운로드 ---------------------------
+// This has to run here, not in popup.js: a popup's own script is torn
+// down the instant the popup loses focus (clicking elsewhere, the OS
+// download notification stealing focus, etc.), so a sequential loop
+// over dozens of photos living only in the popup stopped dead after
+// whatever download was in flight — confirmed live ("사진이 한장만
+// 다운로드됨"). Every other multi-step job in this extension already
+// runs here for the same reason; this brings photo downloads in line
+// with that instead of being the one exception.
+let placePhotoDownloadRunning = false;
+
+async function getPlacePhotoDownloadStatus() {
+  const { placePhotoDownloadStatus } = await chrome.storage.local.get("placePhotoDownloadStatus");
+  return placePhotoDownloadStatus || { running: false, total: 0, done: 0, failed: 0, error: "" };
+}
+
+async function setPlacePhotoDownloadStatus(patch) {
+  const current = await getPlacePhotoDownloadStatus();
+  await chrome.storage.local.set({ placePhotoDownloadStatus: { ...current, ...patch } });
+}
+
+function sanitizeForFilename(s) {
+  return (s || "").replace(/[\\/:*?"<>|]/g, "_").trim();
+}
+
+async function startPlacePhotoDownload(reviews) {
+  if (placePhotoDownloadRunning) return { ok: false, reason: "already_running" };
+
+  const jobs = [];
+  (reviews || []).forEach((r, reviewIndex) => {
+    const urls = Array.isArray(r.photoUrls) ? r.photoUrls : [];
+    urls.forEach((url, photoIndex) => {
+      jobs.push({ url, reviewIndex, photoIndex, nickname: r.nickname, placeName: r.placeName });
+    });
+  });
+  if (jobs.length === 0) return { ok: false, reason: "no_photos" };
+
+  placePhotoDownloadRunning = true;
+  await setPlacePhotoDownloadStatus({ running: true, total: jobs.length, done: 0, failed: 0, error: "" });
+
+  const folder = sanitizeForFilename(jobs[0].placeName) || "플레이스";
+  let done = 0;
+  let failed = 0;
+
+  for (const job of jobs) {
+    const extMatch = job.url.match(/\.(jpg|jpeg|png|webp|gif)(?:[?&]|$)/i);
+    const ext = extMatch ? extMatch[1].toLowerCase() : "jpg";
+    const filename = `네이버플레이스사진/${folder}/${String(job.reviewIndex + 1).padStart(3, "0")}_${
+      sanitizeForFilename(job.nickname) || "익명"
+    }_${job.photoIndex + 1}.${ext}`;
+
+    try {
+      await chrome.downloads.download({ url: job.url, filename, saveAs: false });
+    } catch (err) {
+      failed++;
+    }
+    done++;
+    await setPlacePhotoDownloadStatus({ done, failed });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+
+  placePhotoDownloadRunning = false;
+  await setPlacePhotoDownloadStatus({ running: false, done, failed });
+  return { ok: true, total: jobs.length, failed };
+}
+
 // --- 네이버 플레이스 후기 기반 블로그 원고 생성 (AI) ---------------
 // Takes review text the user pasted by hand, or pulled in from the
 // place-review collector above, plus basic store info, and asks the
@@ -1591,6 +1657,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     getPlaceReviewStatus().then(sendResponse);
     return true;
   }
+  if (message && message.type === "START_PLACE_PHOTO_DOWNLOAD" && Array.isArray(message.reviews)) {
+    startPlacePhotoDownload(message.reviews).then(sendResponse);
+    return true;
+  }
+  if (message && message.type === "GET_PLACE_PHOTO_DOWNLOAD_STATUS") {
+    getPlacePhotoDownloadStatus().then(sendResponse);
+    return true;
+  }
   if (message && message.type === "START_MAIL_AUTOSEND" && Array.isArray(message.queue)) {
     startMailAutosend(message.queue, message.countdownSeconds, message.perHour, message.sheetUrl, message.dailyLimit).then(
       sendResponse
@@ -1671,6 +1745,10 @@ chrome.commands.onCommand.addListener(async (command) => {
   const placeStatus = await getPlaceReviewStatus();
   if (placeStatus.running && !isRunning) {
     await setPlaceReviewStatus({ running: false, error: "interrupted" });
+  }
+  const photoDownloadStatus = await getPlacePhotoDownloadStatus();
+  if (photoDownloadStatus.running && !placePhotoDownloadRunning) {
+    await setPlacePhotoDownloadStatus({ running: false, error: "interrupted" });
   }
   // Unlike the two above, an active repeat cycle isn't marked
   // "interrupted" here — its REPEAT_CYCLE_ALARM_NAME alarm survives this
