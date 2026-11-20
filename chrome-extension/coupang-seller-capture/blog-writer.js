@@ -164,12 +164,57 @@ function renderChips(containerId, items, className) {
 // markers — it has nowhere to carry which photo each N refers to).
 let lastResult = null;
 
+function renderTitles(titles) {
+  const container = document.getElementById("titlesList");
+  container.innerHTML = "";
+  if (!titles || titles.length === 0) {
+    container.innerHTML = '<span style="color:#9ca3af;font-size:12px;">없음</span>';
+    return;
+  }
+  titles.forEach((title) => {
+    const row = document.createElement("div");
+    row.className = "title-option";
+    const span = document.createElement("span");
+    span.textContent = title;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "복사";
+    btn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(title);
+        setStatus("제목을 복사했습니다.");
+      } catch (err) {
+        setStatus("복사에 실패했습니다 — 직접 선택해서 복사하세요.", true);
+      }
+    });
+    row.appendChild(span);
+    row.appendChild(btn);
+    container.appendChild(row);
+  });
+}
+
+async function handleCopyHashtags() {
+  const hashtags = (lastResult && lastResult.hashtags) || [];
+  if (hashtags.length === 0) {
+    setStatus("해시태그가 없습니다.", true);
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(hashtags.join(" "));
+    setStatus("해시태그를 복사했습니다.");
+  } catch (err) {
+    setStatus("복사에 실패했습니다 — 직접 선택해서 복사하세요.", true);
+  }
+}
+
 function renderResult(result) {
   lastResult = result;
   document.getElementById("resultCard").classList.remove("hidden");
+  renderTitles(result.titles);
   renderChips("requiredKeywords", result.requiredKeywords, "required");
   renderChips("goodKeywords", result.goodKeywords, "good");
   renderChips("signatureMenuOut", result.signatureMenu, "menu");
+  renderChips("hashtagsOut", result.hashtags, "hashtag");
   document.getElementById("draftOutput").value = result.draft || "";
 
   const photoSection = document.getElementById("photoGuideSection");
@@ -210,7 +255,7 @@ function renderResult(result) {
 // preview copy-paste as text-and-images together into a rich text
 // editor like Naver Blog's, rather than just plain text with bracket
 // placeholders.
-function buildPreviewNode(draftText, photoSlots, photoCaptions) {
+function buildPreviewNode(draftText, photoSlots, photoCaptions, hashtags) {
   const container = document.createElement("div");
   const markerPattern = /\[사진\s*삽입\s*:\s*(\d+)\]/g;
 
@@ -248,6 +293,13 @@ function buildPreviewNode(draftText, photoSlots, photoCaptions) {
   }
   appendTextBlock(draftText.slice(lastIndex));
 
+  if (hashtags && hashtags.length > 0) {
+    const p = document.createElement("p");
+    p.style.color = "#5b21b6";
+    p.textContent = hashtags.join(" ");
+    container.appendChild(p);
+  }
+
   return container;
 }
 
@@ -259,7 +311,8 @@ function renderPreview() {
   }
   const photoSlots = lastResult && Array.isArray(lastResult.photoSlots) ? lastResult.photoSlots : [];
   const photoCaptions = lastResult && Array.isArray(lastResult.photoCaptions) ? lastResult.photoCaptions : [];
-  const node = buildPreviewNode(draftText, photoSlots, photoCaptions);
+  const hashtags = lastResult && Array.isArray(lastResult.hashtags) ? lastResult.hashtags : [];
+  const node = buildPreviewNode(draftText, photoSlots, photoCaptions, hashtags);
   const container = document.getElementById("blogPreview");
   container.innerHTML = "";
   container.appendChild(node);
@@ -390,6 +443,8 @@ async function handleDownloadZip() {
 
   const photoSlots = lastResult && Array.isArray(lastResult.photoSlots) ? lastResult.photoSlots : [];
   const photoCaptions = lastResult && Array.isArray(lastResult.photoCaptions) ? lastResult.photoCaptions : [];
+  const titles = lastResult && Array.isArray(lastResult.titles) ? lastResult.titles : [];
+  const hashtags = lastResult && Array.isArray(lastResult.hashtags) ? lastResult.hashtags : [];
   const storeName = document.getElementById("storeNameInput").value.trim();
   const statusEl = document.getElementById("downloadZipStatus");
   const btn = document.getElementById("downloadZipBtn");
@@ -400,13 +455,17 @@ async function handleDownloadZip() {
   try {
     const zip = new JSZip();
 
-    const txtBody = draftText.replace(/\[사진\s*삽입\s*:\s*(\d+)\]/g, (whole, numStr) => {
+    const bodyWithPhotoNames = draftText.replace(/\[사진\s*삽입\s*:\s*(\d+)\]/g, (whole, numStr) => {
       const num = parseInt(numStr, 10);
       const slot = photoSlots[num - 1];
       if (!slot) return whole;
       const caption = photoCaptions[num - 1];
       return `[사진: ${photoSlotBasename(slot)}${caption ? ` — ${caption}` : ""}]`;
     });
+
+    const titleBlock = titles.length > 0 ? `[제목 추천]\n${titles.map((t, i) => `${i + 1}. ${t}`).join("\n")}\n\n` : "";
+    const hashtagBlock = hashtags.length > 0 ? `\n\n${hashtags.join(" ")}` : "";
+    const txtBody = `${titleBlock}${bodyWithPhotoNames}${hashtagBlock}`;
     zip.file("블로그원고.txt", "﻿" + txtBody);
 
     let failed = 0;
@@ -455,6 +514,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("generateBtn").addEventListener("click", handleGenerate);
   document.getElementById("copyDraftBtn").addEventListener("click", handleCopyDraft);
   document.getElementById("downloadZipBtn").addEventListener("click", handleDownloadZip);
+  document.getElementById("copyHashtagsBtn").addEventListener("click", handleCopyHashtags);
   document.getElementById("includePhotosCheckbox").addEventListener("change", (e) => {
     document.getElementById("photoCountRow").style.display = e.target.checked ? "flex" : "none";
   });

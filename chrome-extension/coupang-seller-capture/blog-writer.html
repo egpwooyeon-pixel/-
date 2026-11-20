@@ -81,6 +81,19 @@
   .chip.required { background: #fee2e2; color: #991b1b; }
   .chip.good { background: #dbeafe; color: #1e40af; }
   .chip.menu { background: #dcfce7; color: #166534; }
+  .chip.hashtag { background: #ede9fe; color: #5b21b6; }
+  .title-option {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 0;
+    border-bottom: 1px solid #f3f4f6;
+    font-size: 13px;
+    color: #374151;
+  }
+  .title-option:last-child { border-bottom: none; }
+  .title-option button { flex-shrink: 0; padding: 4px 10px; font-size: 12px; }
   #draftOutput { min-height: 260px; }
   .hidden { display: none; }
   .photo-guide-item {
@@ -207,6 +220,10 @@
   <div class="card hidden" id="resultCard">
     <h2>5. 결과</h2>
     <div class="keyword-group">
+      <div class="label">제목 추천 (검색 많이 되는 키워드 조합)</div>
+      <div id="titlesList"></div>
+    </div>
+    <div class="keyword-group">
       <div class="label">필수 키워드</div>
       <div id="requiredKeywords"></div>
     </div>
@@ -225,6 +242,12 @@
       <button id="downloadZipBtn" type="button">원고+사진 ZIP 다운로드</button>
     </div>
     <div id="downloadZipStatus" class="file-hint" style="margin-top:4px;"></div>
+
+    <div class="keyword-group" style="margin-top:16px;">
+      <div class="label">해시태그</div>
+      <div id="hashtagsOut"></div>
+      <button id="copyHashtagsBtn" type="button" style="margin-top:6px;">해시태그 전체 복사</button>
+    </div>
 
     <div id="photoGuideSection" class="hidden" style="margin-top:16px;">
       <label>사진 배치 가이드</label>

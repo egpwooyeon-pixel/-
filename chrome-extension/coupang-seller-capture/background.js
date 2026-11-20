@@ -1251,6 +1251,8 @@ ${signatureMenuHint ? `\n[참고: 알려준 시그니처 메뉴] ${signatureMenu
   "requiredKeywords": ["지역+업종 조합 등 블로그 제목/본문에 꼭 들어가야 하는 키워드 2~4개"],
   "goodKeywords": ["리뷰에서 반복적으로 나타나는 긍정 표현(분위기, 가성비, 친절, 웨이팅 등) 3~6개"],
   "signatureMenu": ["리뷰에 자주 언급된 구체적 메뉴/음식 이름 1~5개"],
+  "titles": ["사람들이 네이버에서 실제로 많이 검색할 법한 키워드(지역+업종, 지역+대표메뉴 등 requiredKeywords 조합 위주)를 앞쪽에 자연스럽게 넣은 블로그 제목 후보 3개. 각 25~40자 내외, 서로 다른 조합/느낌으로, 클릭하고 싶게 쓰되 낚시성 과장은 금지"],
+  "hashtags": ["requiredKeywords/goodKeywords/signatureMenu와 지역명을 바탕으로 한 해시태그 10~15개, 전부 '#단어' 형태(태그 하나 안에는 띄어쓰기 없이 붙여쓰기, 예: '#신사역맛집'), 중복 없이"],
   "draft": "실제 1인칭 방문 후기 톤의 블로그 본문 전체 텍스트.${
     hasPhotos
       ? ` 사진이 많으니 1500~2500자 내외로, 문단을 충분히 나누고 각 문단 사이에 [사진 삽입: N] 마커를 한 줄로 넣어 총 ${photoSlots.length}개(1부터 ${photoSlots.length}까지 모두, 중복·누락 없이)를 사진 순서(위 첨부 순서)와 맞춰 배치.`
@@ -1316,7 +1318,16 @@ function parseBlogDraftResponse(text, photoSlots) {
   try {
     parsed = JSON.parse(cleaned);
   } catch (err) {
-    return { requiredKeywords: [], goodKeywords: [], signatureMenu: [], draft: text, photoCaptions: [], parseFailed: true };
+    return {
+      requiredKeywords: [],
+      goodKeywords: [],
+      signatureMenu: [],
+      titles: [],
+      hashtags: [],
+      draft: text,
+      photoCaptions: [],
+      parseFailed: true,
+    };
   }
   const hasPhotos = Array.isArray(photoSlots) && photoSlots.length > 0;
   let photoCaptions = Array.isArray(parsed.photoCaptions) ? parsed.photoCaptions.map((c) => String(c)) : [];
@@ -1328,10 +1339,22 @@ function parseBlogDraftResponse(text, photoSlots) {
     while (photoCaptions.length < photoSlots.length) photoCaptions.push("");
     photoCaptions = photoCaptions.slice(0, photoSlots.length);
   }
+  // The model is told to format each tag as "#단어" with no internal
+  // spaces, but defensively normalize anyway: ensure a leading "#" and
+  // strip any whitespace the model left inside one, rather than
+  // trusting it followed the instruction exactly.
+  const hashtags = Array.isArray(parsed.hashtags)
+    ? parsed.hashtags
+        .map((h) => "#" + String(h).replace(/\s+/g, "").replace(/^#+/, ""))
+        .filter((h) => h.length > 1)
+    : [];
+
   return {
     requiredKeywords: Array.isArray(parsed.requiredKeywords) ? parsed.requiredKeywords : [],
     goodKeywords: Array.isArray(parsed.goodKeywords) ? parsed.goodKeywords : [],
     signatureMenu: Array.isArray(parsed.signatureMenu) ? parsed.signatureMenu : [],
+    titles: Array.isArray(parsed.titles) ? parsed.titles.map((t) => String(t)) : [],
+    hashtags,
     draft: typeof parsed.draft === "string" ? parsed.draft : text,
     photoCaptions,
     parseFailed: false,
