@@ -946,13 +946,16 @@ async function startNaverReviewCollection(tabId) {
 
 // --- 네이버 플레이스(지도) 영수증리뷰 수집 ------------------------
 // extractVisiblePlaceReviews and loadMorePlaceReviews (shared.js) were
-// built and confirmed against a real review card's outerHTML the user
-// pasted. No sort control is touched here (unlike the Smart Store
-// collector above) — this just collects whatever's currently sorted/
-// visible, scrolling to load more, since the place panel's own
-// "추천순/최신순" sort buttons haven't been inspected yet. Runs with
-// `allFrames: true` because it isn't confirmed whether the review
-// panel on a map.naver.com place page is same-frame or an embedded
+// built and confirmed against real markup the user pasted — a review
+// card's outerHTML, and (confirmed on two different place pages) the
+// list's own "펼쳐서 더보기" button, which loadMorePlaceReviews clicks
+// rather than relying on scroll (scroll alone was confirmed NOT to
+// auto-load more). No sort control is touched here (unlike the Smart
+// Store collector above) — this just collects whatever's currently
+// sorted/visible, since the place panel's own "추천순/최신순" sort
+// buttons haven't been inspected yet. Runs with `allFrames: true`
+// because it isn't confirmed whether the review panel on a
+// map.naver.com place page is same-frame or an embedded
 // pcmap.place.naver.com iframe — each frame is tried and empty results
 // from the wrong one are harmless.
 const PLACE_REVIEW_TARGET = 150;

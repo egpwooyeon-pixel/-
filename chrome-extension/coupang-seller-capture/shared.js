@@ -686,17 +686,49 @@ function extractVisiblePlaceReviews() {
   });
 }
 
-// The review panel on a Naver map place page reads as a narrow,
-// independently-scrolled side column rather than the whole browser
-// page scrolling (unlike the Smart Store product page this mirrors),
-// so this scrolls whichever ancestor of the last card actually has
-// its own scrollbar — found by walking up until something has
-// overflow-y auto/scroll and real extra height — in addition to
-// `scrollIntoView` (which already targets the right scroll container
-// on its own) and a plain window scroll as a harmless fallback in
-// case the list isn't in its own panel after all.
+// Confirmed live on two different place pages (place_id 1263419132 and
+// 1472142184) that this list does NOT auto-load on scroll — instead an
+// explicit "펼쳐서 더보기" button appears at the bottom and has to be
+// clicked. Its real clickable element (not just the inner label span)
+// carries `data-nlog-area="plc_rrv.more"`, a deliberately-named
+// analytics tag matching the same naming convention as the `data-pui-
+// click-code` attributes used elsewhere — confirmed identical across
+// both sample pages despite their different place_id, so this is
+// trusted as the primary anchor, with a visible-text match on "펼쳐서
+// 더보기" as a fallback (same durability bet clickNaverSortOption makes)
+// in case a future build drops that attribute. Scrolling first is kept
+// as a secondary attempt only for the case where no such button exists
+// at all (e.g. the button needs to scroll into view before it renders,
+// or some place template genuinely does use infinite scroll instead —
+// that part is unverified, unlike the button path).
 async function loadMorePlaceReviews() {
   const getCards = () => document.querySelectorAll("li.place_apply_pui");
+
+  function findMoreButton() {
+    const tagged = document.querySelector('a[data-nlog-area="plc_rrv.more"]');
+    if (tagged) return tagged;
+    const candidates = Array.from(document.querySelectorAll('a[role="button"], button'));
+    return (
+      candidates.find((el) => el.offsetParent !== null && el.textContent.replace(/\s+/g, "").includes("펼쳐서더보기")) || null
+    );
+  }
+
+  const before = getCards().length;
+  if (before === 0) return { ok: false, reason: "no_cards_yet", before: 0, after: 0 };
+
+  const btn = findMoreButton();
+  if (btn) {
+    btn.scrollIntoView({ block: "center" });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    btn.click();
+
+    const start = Date.now();
+    while (Date.now() - start < 6000 && getCards().length === before) {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    const after = getCards().length;
+    return { ok: after > before, before, after, via: "button" };
+  }
 
   function findScrollableAncestor(el) {
     let node = el.parentElement;
@@ -709,9 +741,6 @@ async function loadMorePlaceReviews() {
     }
     return document.scrollingElement || document.documentElement;
   }
-
-  const before = getCards().length;
-  if (before === 0) return { ok: false, reason: "no_cards_yet", before: 0, after: 0 };
 
   let lastHeight = 0;
   let stableHeightCount = 0;
@@ -729,6 +758,15 @@ async function loadMorePlaceReviews() {
 
     await new Promise((resolve) => setTimeout(resolve, 500));
 
+    // A "더보기" button may only render once scrolled into range —
+    // check again on every pass instead of just once at the top.
+    const lateBtn = findMoreButton();
+    if (lateBtn) {
+      lateBtn.scrollIntoView({ block: "center" });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      lateBtn.click();
+    }
+
     if (getCards().length > before) break;
 
     const nowHeight = scrollTarget.scrollHeight;
@@ -743,7 +781,7 @@ async function loadMorePlaceReviews() {
   }
 
   const after = getCards().length;
-  return { ok: after > before, before, after };
+  return { ok: after > before, before, after, via: "scroll" };
 }
 
 // Runs on a Gmail compose tab (mail.google.com) that background.js just
