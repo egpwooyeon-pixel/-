@@ -83,6 +83,28 @@
   .chip.menu { background: #dcfce7; color: #166534; }
   #draftOutput { min-height: 260px; }
   .hidden { display: none; }
+  .photo-guide-item {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 8px 0;
+    border-bottom: 1px solid #f3f4f6;
+  }
+  .photo-guide-item img {
+    width: 64px;
+    height: 64px;
+    object-fit: cover;
+    border-radius: 6px;
+    border: 1px solid #e5e7eb;
+    flex-shrink: 0;
+  }
+  .photo-guide-item .num {
+    font-weight: 600;
+    color: #2563eb;
+    min-width: 26px;
+  }
+  .photo-guide-item .meta { font-size: 11px; color: #9ca3af; margin-top: 2px; word-break: break-all; }
+  .photo-guide-item .caption { font-size: 13px; color: #374151; }
 </style>
 </head>
 <body>
@@ -146,6 +168,19 @@
     <button id="loadCollectedBtn" type="button">수집한 플레이스 리뷰 불러오기</button>
     <div id="loadCollectedStatus" class="file-hint" style="margin-top:4px;"></div>
     <textarea id="reviewsInput" rows="10" placeholder="분위기도 정말 좋고 친절하시고 메뉴 하나하나 설명도 잘해주시고 분위기는...&#10;돈까스인데 워낙 부드러워서 물리지 않고 잘 먹었던 것 같아요&#10;(한 줄에 리뷰 하나씩)" style="margin-top:8px;"></textarea>
+
+    <div class="file-hint" style="margin-top:12px;">
+      <label style="display:inline-flex;align-items:center;gap:6px;margin-bottom:0;">
+        <input type="checkbox" id="includePhotosCheckbox" style="width:auto;margin:0;" />
+        사진도 블로그에 배치하기 (위 "수집한 플레이스 리뷰 불러오기"로 가져온 리뷰의 실제 사진 사용 — 직접 붙여넣은 리뷰에는 사진이 없어 적용되지 않습니다)
+      </label>
+    </div>
+    <div class="row2" id="photoCountRow" style="margin-top:8px;display:none;">
+      <div>
+        <label>블로그에 넣을 사진 수</label>
+        <input type="text" id="photoCountInput" value="15" />
+      </div>
+    </div>
   </div>
 
   <div class="card">
@@ -168,9 +203,17 @@
       <div class="label">시그니처 메뉴</div>
       <div id="signatureMenuOut"></div>
     </div>
-    <label style="margin-top:8px;">블로그 원고 (수정 가능)</label>
+    <label style="margin-top:8px;">블로그 원고 (수정 가능, 본문 중 "[사진 삽입: N]"은 아래 사진 배치 가이드의 N번 사진을 끼워 넣을 자리입니다)</label>
     <textarea id="draftOutput" rows="14"></textarea>
     <button id="copyDraftBtn">클립보드에 복사</button>
+
+    <div id="photoGuideSection" class="hidden" style="margin-top:16px;">
+      <label>사진 배치 가이드</label>
+      <div class="file-hint">
+        본문의 "[사진 삽입: N]" 자리에 아래 N번 사진을 넣으세요. 파일명은 "리뷰 사진 전체 다운로드"로 받은 로컬 파일명과 같은 규칙이라, 다운로드 폴더에서 같은 이름을 찾아 끌어넣으면 됩니다.
+      </div>
+      <div id="photoGuideList"></div>
+    </div>
   </div>
 
   <script src="blog-writer.js"></script>
