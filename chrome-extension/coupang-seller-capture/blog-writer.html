@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>네이버 플레이스 블로그 원고 도구</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 24px;
+    font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+    font-size: 14px;
+    color: #222;
+    background: #fafafa;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .subtitle { color: #6b7280; font-size: 13px; margin-bottom: 24px; }
+  .card {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin-bottom: 18px;
+  }
+  .card h2 { font-size: 14px; margin: 0 0 10px; color: #374151; }
+  label { display: block; font-size: 12px; color: #4b5563; margin-bottom: 4px; }
+  input[type="text"], input[type="password"], textarea, select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: inherit;
+    box-sizing: border-box;
+    margin-bottom: 12px;
+  }
+  textarea { resize: vertical; line-height: 1.5; }
+  .row2 { display: flex; gap: 12px; }
+  .row2 > div { flex: 1; }
+  .file-hint { font-size: 12px; color: #6b7280; margin-bottom: 8px; }
+  .warn-box {
+    background: #fffbeb;
+    border: 1px solid #fde68a;
+    color: #92400e;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 12px;
+    margin-bottom: 12px;
+    line-height: 1.5;
+  }
+  button {
+    padding: 8px 14px;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    background: #f3f4f6;
+    color: #374151;
+    border: 1px solid #e5e7eb;
+  }
+  button:hover { background: #e5e7eb; }
+  .primaryBtn {
+    background: #2563eb;
+    color: #fff;
+    border: none;
+  }
+  .primaryBtn:hover { background: #1d4ed8; }
+  .primaryBtn:disabled { background: #93c5fd; cursor: not-allowed; }
+  #status { font-size: 12px; color: #6b7280; margin-top: 8px; }
+  #status.error { color: #dc2626; }
+  .keyword-group { margin-bottom: 10px; }
+  .keyword-group .label { font-size: 12px; color: #6b7280; margin-bottom: 4px; }
+  .chip {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    margin: 0 6px 6px 0;
+  }
+  .chip.required { background: #fee2e2; color: #991b1b; }
+  .chip.good { background: #dbeafe; color: #1e40af; }
+  .chip.menu { background: #dcfce7; color: #166534; }
+  .chip.hashtag { background: #ede9fe; color: #5b21b6; }
+  .title-option {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 0;
+    border-bottom: 1px solid #f3f4f6;
+    font-size: 13px;
+    color: #374151;
+  }
+  .title-option:last-child { border-bottom: none; }
+  .title-option button { flex-shrink: 0; padding: 4px 10px; font-size: 12px; }
+  #draftOutput { min-height: 260px; }
+  .hidden { display: none; }
+  .photo-guide-item {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 8px 0;
+    border-bottom: 1px solid #f3f4f6;
+  }
+  .photo-guide-item img {
+    width: 64px;
+    height: 64px;
+    object-fit: cover;
+    border-radius: 6px;
+    border: 1px solid #e5e7eb;
+    flex-shrink: 0;
+  }
+  .photo-guide-item .num {
+    font-weight: 600;
+    color: #2563eb;
+    min-width: 26px;
+  }
+  .photo-guide-item .meta { font-size: 11px; color: #9ca3af; margin-top: 2px; word-break: break-all; }
+  .photo-guide-item .caption { font-size: 13px; color: #374151; }
+  .blog-preview {
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 16px;
+    background: #fff;
+    min-height: 120px;
+    max-height: 600px;
+    overflow-y: auto;
+    line-height: 1.8;
+    font-size: 14px;
+  }
+  .blog-preview p { margin: 0 0 14px; }
+  .blog-preview figure { margin: 16px 0; }
+  .blog-preview figure img { max-width: 100%; border-radius: 8px; display: block; }
+  .blog-preview figcaption { font-size: 12px; color: #6b7280; margin-top: 6px; }
+</style>
+</head>
+<body>
+  <h1>네이버 플레이스 블로그 원고 도구</h1>
+  <div class="subtitle">네이버 플레이스 영수증리뷰 내용을 넣으면, 리뷰에서 반복되는 키워드를 뽑아 분류하고 자연스러운 블로그 원고 초안을 만들어줍니다. 실제 리뷰 내용에 없는 사실은 지어내지 않도록 프롬프트에 명시되어 있지만, 발행 전 반드시 직접 검토·수정하세요.</div>
+
+  <div class="warn-box">
+    <b>주의:</b> 방문 경험 없이 리뷰만으로 만든 글을 "실제 방문 후기"처럼 올리면 표시·광고법상 문제가 될 수 있습니다. 본인 가게/업체 홍보용으로 사실에 기반해 작성하시고, 대행·협찬 등 제3자를 위해 쓰는 경우라면 관련 표기 의무를 꼭 확인하세요.
+  </div>
+
+  <div class="card">
+    <h2>1. Google Gemini API 설정 (무료)</h2>
+    <div class="file-hint">
+      원고 생성은 Google Gemini API를 사용합니다 — 개인 사용 수준에서는 무료 티어로 비용 없이 쓸 수 있습니다(다만 분당/일일 호출 한도가 있어, 한도를 넘으면 잠시 후 다시 시도해야 합니다). <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>에서 구글 계정으로 로그인해 무료로 API 키를 발급받아 아래에 저장하세요 — 이 키는 이 브라우저(확장프로그램 로컬 저장소)에만 저장되고, generativelanguage.googleapis.com으로만 직접 전송됩니다.
+    </div>
+    <div class="row2">
+      <div>
+        <label>API 키</label>
+        <input type="password" id="apiKeyInput" placeholder="AIza..." />
+      </div>
+      <div>
+        <label>모델</label>
+        <input type="text" id="modelSelect" value="gemini-3.8-flash" placeholder="gemini-3.8-flash" />
+      </div>
+    </div>
+    <div class="file-hint" style="margin-top:-6px;">
+      모델 이름이 자주 바뀌니, 안 되면 <a href="https://ai.google.dev/gemini-api/docs/models" target="_blank" rel="noopener">최신 모델 목록</a>에서 "flash"가 들어간 이름으로 바꿔보세요.
+    </div>
+    <button id="saveApiKeyBtn">저장</button>
+  </div>
+
+  <div class="card">
+    <h2>2. 가게 정보</h2>
+    <div class="row2">
+      <div>
+        <label>상호명</label>
+        <input type="text" id="storeNameInput" placeholder="예: 동화고옥 선릉점" />
+      </div>
+      <div>
+        <label>지역/동네</label>
+        <input type="text" id="storeAreaInput" placeholder="예: 강남 선릉역" />
+      </div>
+    </div>
+    <div class="row2">
+      <div>
+        <label>업종/카테고리</label>
+        <input type="text" id="storeCategoryInput" placeholder="예: 한정식, 고깃집" />
+      </div>
+      <div>
+        <label>시그니처 메뉴 (선택, 쉼표로 구분)</label>
+        <input type="text" id="signatureMenuInput" placeholder="예: 갈비코스, 육회비빔밥" />
+      </div>
+    </div>
+    <label>원고 요청사항 (선택)</label>
+    <textarea id="customInstructionsInput" rows="2" placeholder="예: 흰색 제품 사진만 써줘 / 가격 얘기는 빼줘 / 20대가 쓴 것처럼 캐주얼하게"></textarea>
+    <div class="file-hint" style="margin-top:-8px;">
+      본문 내용·말투에는 그대로 반영됩니다. 사진 선택에는 리뷰에 적힌 옵션·색상·본문 텍스트에서 요청사항과 겹치는 단어가 있는 리뷰를 우선 거르는 식으로만 반영돼요(사진 이미지 자체를 보고 거르는 게 아니라 100% 정확하진 않습니다) — 생성 후 안 맞는 사진이 섞였으면 직접 빼주세요.
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>3. 리뷰 붙여넣기</h2>
+    <div class="file-hint">
+      팝업의 "네이버 플레이스 영수증리뷰 수집", "네이버 스토어 리뷰 수집", "구글 리뷰 수집"으로 먼저 리뷰를 모았다면 아래 버튼으로 바로 불러올 수 있습니다. 직접 복사해서 붙여넣어도 됩니다 — 한 줄에 리뷰 하나씩, 10~30개 정도면 충분합니다.
+    </div>
+    <div class="row2" style="margin-bottom:0;flex-wrap:wrap;">
+      <button id="loadCollectedBtn" type="button">수집한 플레이스 리뷰 불러오기</button>
+      <button id="loadNaverStoreBtn" type="button">수집한 스마트스토어 리뷰 불러오기</button>
+      <button id="loadGoogleReviewsBtn" type="button">수집한 구글 리뷰 불러오기</button>
+    </div>
+    <div id="loadCollectedStatus" class="file-hint" style="margin-top:4px;"></div>
+    <textarea id="reviewsInput" rows="10" placeholder="분위기도 정말 좋고 친절하시고 메뉴 하나하나 설명도 잘해주시고 분위기는...&#10;돈까스인데 워낙 부드러워서 물리지 않고 잘 먹었던 것 같아요&#10;(한 줄에 리뷰 하나씩)" style="margin-top:8px;"></textarea>
+
+    <div class="file-hint" style="margin-top:12px;">
+      <label style="display:inline-flex;align-items:center;gap:6px;margin-bottom:0;">
+        <input type="checkbox" id="includePhotosCheckbox" style="width:auto;margin:0;" />
+        사진도 블로그에 배치하기 (위 "불러오기" 버튼으로 가져온 리뷰의 실제 사진 사용 — 직접 붙여넣은 리뷰에는 사진이 없어 적용되지 않습니다)
+      </label>
+    </div>
+    <div class="row2" id="photoCountRow" style="margin-top:8px;display:none;">
+      <div>
+        <label>원고 1개당 사진 수 (최소)</label>
+        <input type="text" id="photoCountMinInput" value="7" />
+      </div>
+      <div>
+        <label>원고 1개당 사진 수 (최대)</label>
+        <input type="text" id="photoCountMaxInput" value="15" />
+      </div>
+    </div>
+    <div class="file-hint" id="photoCountHint" style="margin-top:-6px;display:none;">
+      한 리뷰어의 사진 수가 이 범위 안에 있으면 그 사람 사진만 그대로 씁니다(최대치를 억지로 채우려고 다른 사람 사진을 섞지 않습니다) — 최소치보다 적을 때만 다음으로 사진 많은 리뷰어를 추가합니다.
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>4. 원고 생성</h2>
+    <div class="row2">
+      <div>
+        <label>만들 원고 개수</label>
+        <input type="text" id="draftCountInput" value="1" />
+      </div>
+    </div>
+    <div class="file-hint" style="margin-top:-6px;">
+      2개 이상이면 불러온 리뷰(와 사진 옵션을 켰다면 사진도)를 원고 수만큼 나눠서, 각 원고가 서로 다른 리뷰/사진을 쓰도록 만듭니다 — 모아둔 리뷰가 많은데 원고 1개에만 쓰이는 게 아깝다면 늘려보세요. 원고 하나당 Gemini API를 한 번씩 호출합니다(무료 티어 호출 한도에 유의).
+    </div>
+    <button id="generateBtn" class="primaryBtn" style="margin-top:8px;">AI로 원고 만들기</button>
+    <div id="status"></div>
+  </div>
+
+  <div id="resultsContainer"></div>
+
+  <script src="lib/jszip.min.js"></script>
+  <script src="blog-writer.js"></script>
+</body>
+</html>

@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>협업 메일 작성 도구</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 24px;
+    font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+    font-size: 14px;
+    color: #222;
+    background: #fafafa;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .subtitle { color: #6b7280; font-size: 13px; margin-bottom: 24px; }
+  .card {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin-bottom: 18px;
+  }
+  .card h2 { font-size: 14px; margin: 0 0 10px; color: #374151; }
+  label { display: block; font-size: 12px; color: #4b5563; margin-bottom: 4px; }
+  input[type="text"], textarea, select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: inherit;
+    box-sizing: border-box;
+    margin-bottom: 12px;
+  }
+  textarea { resize: vertical; min-height: 90px; line-height: 1.5; }
+  .row2 { display: flex; gap: 12px; }
+  .row2 > div { flex: 1; }
+  .template-help {
+    font-size: 11px;
+    color: #9ca3af;
+    margin: -8px 0 12px;
+  }
+  .template-help code {
+    background: #f3f4f6;
+    padding: 1px 4px;
+    border-radius: 4px;
+  }
+  #fileInput { margin-bottom: 8px; }
+  .file-hint { font-size: 12px; color: #6b7280; margin-bottom: 4px; }
+  #columnPickers { display: none; gap: 12px; margin-top: 10px; }
+  #columnPickers.active { display: flex; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  th, td {
+    border-bottom: 1px solid #eee;
+    padding: 8px 6px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { color: #6b7280; font-weight: 600; font-size: 12px; }
+  td.email { color: #374151; word-break: break-all; max-width: 160px; }
+  td.product input {
+    margin: 0;
+    padding: 6px 8px;
+    font-size: 12px;
+  }
+  td.actions { white-space: nowrap; }
+  button {
+    padding: 7px 12px;
+    border: none;
+    border-radius: 6px;
+    font-size: 12.5px;
+    cursor: pointer;
+    background: #f3f4f6;
+    color: #374151;
+    border: 1px solid #e5e7eb;
+  }
+  button:hover { background: #e5e7eb; }
+  #startAutosendBtn {
+    background: #2563eb;
+    color: #fff;
+    border: none;
+  }
+  #startAutosendBtn:hover { background: #1d4ed8; }
+  #startAutosendBtn:disabled { background: #93c5fd; cursor: not-allowed; }
+  .composeBtn {
+    background: #2563eb;
+    color: #fff;
+    border: none;
+  }
+  .composeBtn:hover { background: #1d4ed8; }
+  .composeBtn.done {
+    background: #dcfce7;
+    color: #166534;
+    border: 1px solid #bbf7d0;
+  }
+  .previewBtn { margin-left: 6px; }
+  .preview-row td {
+    background: #f9fafb;
+    font-size: 12px;
+    white-space: pre-wrap;
+    color: #374151;
+  }
+  .empty { color: #9ca3af; padding: 20px 0; text-align: center; }
+  .warn-text { color: #b45309; }
+  td.done { text-align: center; }
+  td.done input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
+  tr.done-row { background: #f0fdf4; }
+  tr.done-row td.email { color: #16a34a; }
+</style>
+</head>
+<body>
+  <h1>협업 메일 작성 도구</h1>
+  <div class="subtitle">엑셀(xlsx)을 올리면 이메일/상품명을 읽어서 메일 초안을 자동으로 만듭니다. 실제 발송은 각 줄에서 Gmail 작성창을 열어 직접 "보내기"를 눌러야 합니다 — 실제 전송은 항상 사람이 직접 합니다.</div>
+
+  <div class="card">
+    <h2>1. 보내는 사람 정보</h2>
+    <div class="row2">
+      <div>
+        <label>이름/직책 (템플릿의 {{NAME}} 자리에 들어갑니다)</label>
+        <input type="text" id="senderName" placeholder="예: 김우연 팀장" />
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>2. 메일 템플릿</h2>
+    <label>제목</label>
+    <input type="text" id="subjectTemplate" />
+    <label>본문</label>
+    <textarea id="bodyTemplate" rows="8"></textarea>
+    <div class="template-help"><code>{{PRODUCT}}</code> = 각 줄의 상품명, <code>{{NAME}}</code> = 위에서 입력한 보내는 사람 이름/직책, <code>{{GREETING}}</code>/<code>{{CLOSING}}</code> = 몇 가지 인사말/맺음말 중 하나가 줄마다 자동으로 돌아가며 들어갑니다(스팸 방지용 — 아래 참고) — 모두 자동 치환됩니다. 자유롭게 수정하고 다음에도 재사용하세요 (자동 저장됩니다).</div>
+    <button id="resetTemplateBtn" type="button">스팸 방지 기본 템플릿으로 초기화</button>
+  </div>
+
+  <div class="card">
+    <h2>3. 명단 가져오기</h2>
+    <div class="file-hint">엑셀(xlsx) 업로드 또는 구글 스프레드시트 연동 중 하나를 사용하세요. 스프레드시트는 이 확장프로그램의 쿠팡 캡처 동기화 시트와는 별개로, 여기 전용 웹 앱 URL을 따로 지정합니다.</div>
+
+    <label>구글 스프레드시트 웹 앱 URL (메일 도구 전용, 선택)</label>
+    <input type="text" id="mailSheetUrlInput" placeholder="https://script.google.com/macros/s/.../exec" />
+    <div class="row2" style="margin-bottom:12px;">
+      <button id="saveMailSheetUrlBtn">URL 저장</button>
+      <button id="loadFromSheetBtn">스프레드시트에서 불러오기</button>
+    </div>
+
+    <div class="file-hint">엑셀 업로드: 이 확장프로그램에서 CSV 다운로드한 파일이면 열/이메일 컬럼을 자동으로 찾습니다. 다른 엑셀이면 아래에서 직접 컬럼을 골라주세요.</div>
+    <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" />
+    <div id="columnPickers">
+      <div style="flex:1;">
+        <label>이메일 컬럼</label>
+        <select id="emailColumnSelect"></select>
+      </div>
+      <div style="flex:1;">
+        <label>상품명 컬럼</label>
+        <select id="productColumnSelect"></select>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>4. 초안 목록</h2>
+    <div id="status" style="font-size:12px;color:#6b7280;margin-bottom:8px;"></div>
+    <table id="rowsTable">
+      <thead>
+        <tr>
+          <th>완료</th>
+          <th>이메일</th>
+          <th>상품명 (수정 가능)</th>
+          <th>작업</th>
+        </tr>
+      </thead>
+      <tbody id="rowsBody">
+        <tr><td colspan="4" class="empty">엑셀을 업로드하면 여기에 목록이 표시됩니다.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>5. 자동 발송 (선택)</h2>
+    <div class="file-hint">
+      정해진 간격으로 아직 "Gmail로 작성하기"를 누르지 않은 항목을 순서대로 열어줍니다. 각 작성창은 화면 앞에 열리고, 지정한 시간만큼 카운트다운하며 — 그 사이에 내용을 직접 수정할 수 있고, 시간이 되면 그 시점 내용 그대로 "보내기"를 대신 눌러줍니다. 언제든 "지금 취소"를 누르면 해당 건은 전송되지 않습니다.
+    </div>
+    <div class="file-hint">
+      <strong>스팸/계정 정지 방지 권장치:</strong> 구글은 시간당 발송 한도를 공식적으로 밝히지 않지만, 일반적으로 <strong>시간당 20통 이하</strong>, <strong>하루 40~100통 이내</strong>로 보내는 것이 안전하다고 알려져 있습니다. 아래 "하루 최대 발송 개수"를 채워두면 그 한도에 도달했을 때 자동으로 멈췄다가, 다음날 같은 간격으로 이어서 보냅니다 — 굳이 매일 직접 재시작할 필요가 없습니다.
+    </div>
+    <div class="row2">
+      <div>
+        <label>시간당 발송 개수 (권장: 20 이하)</label>
+        <input type="text" id="perHourCount" value="2" />
+      </div>
+      <div>
+        <label>전송 전 대기시간(초) — 이 시간 동안 내용을 검토/수정할 수 있습니다</label>
+        <input type="text" id="countdownSeconds" value="60" />
+      </div>
+    </div>
+    <div class="row2">
+      <div>
+        <label>하루 최대 발송 개수 (권장: 40~100, 비워두면 무제한)</label>
+        <input type="text" id="dailyLimitCount" value="80" />
+      </div>
+    </div>
+    <div id="intervalHint" class="file-hint" style="margin-top:-8px;"></div>
+    <div class="row2" style="margin-bottom:12px;">
+      <button id="startAutosendBtn">자동 발송 시작</button>
+      <button id="stopAutosendBtn">자동 발송 중지</button>
+    </div>
+    <div id="autosendStatus" style="font-size:12px;color:#6b7280;"></div>
+  </div>
+
+  <script src="lib/xlsx.full.min.js"></script>
+  <script src="shared.js"></script>
+  <script src="mail-composer.js"></script>
+</body>
+</html>
