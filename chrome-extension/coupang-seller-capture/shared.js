@@ -1034,38 +1034,33 @@ function startGmailAutoSendCountdown(countdownSeconds) {
   }
 }
 
-// --- 구글 리뷰(검색 결과 내 업체 패널) 수집 --------------------------
-// Built from one real review card's outerHTML the user pasted (from
-// the "리뷰" side panel that opens inside a www.google.com search
-// results page, not maps.google.com) — card wrapper div.bwb7ce[data-id],
-// name div.rhtdWc, reviewer meta (지역가이드·리뷰수·사진수) div.YE6B9b,
-// profile link a.yC3ZMb, star rating as 5 small svgs under div.h3PQJ
-// (filled = fill="#fabb05", empty = fill="#dadce0" — count filled
-// ones), relative date span.y3Ibjb .m6Mr5d, body div.d83Iyc, photos as
-// <img src> inside div[role="listitem"].uYPdrf within the card's
-// g-scrolling-carousel (full URLs already in src — no lazyload timing
-// issue like Naver Place had). data-id on the card doubles as a
-// stable unique review id.
-//
-// Unlike the Naver collectors, this ONLY reads whatever review cards
-// are already in the DOM right now — no scroll/"more" automation yet.
-// The review panel looked like its own internally-scrollable column
-// (not the whole page), so guessing a scroll strategy here risked
-// repeating the exact mistake this project just spent a long session
-// fixing for Smart Store. Scroll the review panel yourself first to
-// load as many as you want, then collect.
-//
+// --- 구글 리뷰(검색 결과 업체 패널 / 구글 지도) 수집 ------------------
 // Google's class names (bwb7ce, d83Iyc, rhtdWc, ...) are short
 // machine-generated identifiers with no semantic meaning (unlike
 // Naver's deliberately-named data-shp-* attributes), so they're more
 // likely to change in a future Google update than the Naver selectors
 // were — if collection stops finding cards after a Google UI change,
 // this is the first place to re-verify with fresh outerHTML.
+//
+// Confirmed two genuinely different layouts render this same data:
+// "search" = the compact panel embedded in a www.google.com search
+// results page (div.bwb7ce[data-id] cards, body in .d83Iyc, photos as
+// <img src> inside role="listitem"); "maps" = the fuller review panel
+// on Google Maps itself (div.jJc9Ad cards — no attribute of its own,
+// but every other interactive element inside it repeats the same
+// data-review-id; body in .wiI7pd; star rating readable straight off
+// an aria-label like "별표 4개" instead of counting svg fill colors;
+// photos are <button data-photo-index> tiles with the URL in an
+// inline background-image style, not an <img src>). Both are tried and
+// their results concatenated — a page only ever matches one of the
+// two card selectors, so there's no double-counting risk, and the
+// same reviewId format from either layout dedupes together naturally
+// wherever results from both get combined (appendGoogleReviews in
+// background.js).
 function extractVisibleGoogleReviews() {
   const norm = (el) => (el && el.textContent ? el.textContent.trim() : "");
-  const cards = Array.from(document.querySelectorAll("div.bwb7ce[data-id]"));
 
-  return cards.map((card) => {
+  const searchCards = Array.from(document.querySelectorAll("div.bwb7ce[data-id]")).map((card) => {
     const reviewId = card.getAttribute("data-id") || "";
     const nickname = norm(card.querySelector(".rhtdWc"));
     const reviewerMeta = norm(card.querySelector(".YE6B9b"));
@@ -1079,20 +1074,127 @@ function extractVisibleGoogleReviews() {
     const date = norm(card.querySelector(".y3Ibjb .m6Mr5d"));
     const body = norm(card.querySelector(".d83Iyc"));
 
-    const photoUrls = Array.from(card.querySelectorAll('div[role="listitem"].uYPdrf img[src]'))
-      .map((img) => img.getAttribute("src") || "")
+    // .uYPdrf is preferred (confirmed from real markup) but falls back
+    // to any role="listitem" img so a minor class-name change doesn't
+    // silently drop every photo; src is checked before data-src since
+    // the confirmed markup already has the real URL in src (no
+    // lazyload timing issue like Naver Place had), but data-src is a
+    // common lazy-load fallback worth trying if src is ever blank.
+    const photoImgs = card.querySelectorAll('div[role="listitem"].uYPdrf img, div[role="listitem"] img');
+    const photoUrls = Array.from(photoImgs)
+      .map((img) => img.getAttribute("src") || img.getAttribute("data-src") || "")
       .filter(Boolean);
 
-    return {
-      reviewId,
-      nickname,
-      reviewerMeta,
-      profileUrl,
-      rating,
-      date,
-      body,
-      photoCount: photoUrls.length,
-      photoUrls,
-    };
+    return { reviewId, nickname, reviewerMeta, profileUrl, rating, date, body, photoCount: photoUrls.length, photoUrls };
   });
+
+  const bgImageUrl = (el) => {
+    const m = /url\((['"]?)(.*?)\1\)/.exec((el && el.style && el.style.backgroundImage) || "");
+    return m ? m[2] : "";
+  };
+
+  const mapsCards = Array.from(document.querySelectorAll("div.jJc9Ad")).map((card) => {
+    const idEl = card.querySelector("[data-review-id]");
+    const reviewId = idEl ? idEl.getAttribute("data-review-id") || "" : "";
+    const nickname = norm(card.querySelector(".d4r55"));
+    const reviewerMeta = norm(card.querySelector(".RfnDt"));
+    const profileEl = card.querySelector("[data-href]");
+    const profileUrl = profileEl ? profileEl.getAttribute("data-href") || "" : "";
+
+    const starEl = card.querySelector('[aria-label*="별표"]');
+    const starMatch = starEl ? /별표\s*(\d+)\s*개/.exec(starEl.getAttribute("aria-label") || "") : null;
+    const rating = starMatch ? parseInt(starMatch[1], 10) : "";
+
+    const date = norm(card.querySelector(".rsqaWe"));
+    const body = norm(card.querySelector(".wiI7pd"));
+
+    // Each visible thumbnail's real photo URL is inline in a
+    // background-image style, not an <img src> — including the "+N"
+    // overlay tile, which is still one real photo underneath the
+    // overlay count. Only the thumbnails already in the DOM are
+    // collected: any further photos past what this tile row shows
+    // (the "+N" count) only load into the DOM once a person clicks to
+    // open the full photo viewer, which this does not do.
+    const photoUrls = Array.from(card.querySelectorAll(".Tya61d"))
+      .map(bgImageUrl)
+      .filter(Boolean);
+
+    return { reviewId, nickname, reviewerMeta, profileUrl, rating, date, body, photoCount: photoUrls.length, photoUrls };
+  });
+
+  return [...searchCards, ...mapsCards];
+}
+
+// Generic scroll-container auto-detection: walks up from the last
+// review card looking for the nearest scrollable ancestor (overflow-y
+// auto/scroll AND scrollHeight > clientHeight), instead of guessing
+// Google's specific class name for the review panel's scroll area —
+// the panel looked like its own internally-scrolling column rather
+// than scrolling the whole page, so window.scrollTo alone (the
+// approach that works for most pages) wouldn't reach it. This is
+// generic DOM introspection, not a guess at Google's markup, but it
+// is a first attempt — if it picks the wrong ancestor (e.g. a
+// decorative scroll wrapper that isn't the real review list), more
+// reviews won't load even though this reports no error.
+function findScrollableAncestor(el) {
+  let node = el ? el.parentElement : null;
+  while (node && node !== document.body && node !== document.documentElement) {
+    const style = window.getComputedStyle(node);
+    const canScrollY = /(auto|scroll)/.test(style.overflowY);
+    if (canScrollY && node.scrollHeight > node.clientHeight + 2) return node;
+    node = node.parentElement;
+  }
+  return null;
+}
+
+async function loadMoreGoogleReviews() {
+  const getCards = () => document.querySelectorAll("div.bwb7ce[data-id], div.jJc9Ad");
+  const cardsAtStart = getCards();
+  const before = cardsAtStart.length;
+  if (before === 0) return { ok: false, reason: "no_cards_yet", before: 0, after: 0 };
+
+  const container = findScrollableAncestor(cardsAtStart[cardsAtStart.length - 1]);
+  const getScrollHeight = () => (container ? container.scrollHeight : Math.max(document.body.scrollHeight, document.documentElement.scrollHeight));
+  const getClientHeight = () => (container ? container.clientHeight : window.innerHeight);
+  const getScrollPos = () => (container ? container.scrollTop : window.scrollY || document.documentElement.scrollTop);
+  const scrollTo = (y) => {
+    if (container) container.scrollTop = y;
+    else window.scrollTo(0, y);
+  };
+  const dispatchScroll = () => {
+    (container || window).dispatchEvent(new Event("scroll"));
+    (container || document).dispatchEvent(new Event("scroll"));
+  };
+
+  let lastHeight = 0;
+  let stableHeightCount = 0;
+  for (let i = 0; i < 40; i++) {
+    const cardsNow = getCards();
+    if (cardsNow.length > 0) cardsNow[cardsNow.length - 1].scrollIntoView({ block: "end" });
+
+    const step = Math.max(getClientHeight() * 0.85, 400);
+    scrollTo(Math.min(getScrollPos() + step, getScrollHeight()));
+    dispatchScroll();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    scrollTo(getScrollHeight());
+    (container || window).dispatchEvent(new WheelEvent("wheel", { deltaY: 800, bubbles: true }));
+    dispatchScroll();
+    await new Promise((resolve) => setTimeout(resolve, 700));
+
+    if (getCards().length > before) break;
+
+    const nowHeight = getScrollHeight();
+    stableHeightCount = nowHeight === lastHeight ? stableHeightCount + 1 : 0;
+    lastHeight = nowHeight;
+    if (stableHeightCount >= 8) break;
+  }
+
+  const start = Date.now();
+  while (Date.now() - start < 5000 && getCards().length === before) {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+
+  const after = getCards().length;
+  return { ok: after > before, before, after, usedContainer: !!container };
 }

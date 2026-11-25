@@ -356,13 +356,19 @@
 
   <hr />
   <div class="section-title">구글 리뷰 수집 (베타)</div>
-  <div class="section-desc">구글 검색(google.com)에서 업체를 검색해 "리뷰" 패널이 화면에 열린 상태로 만든 뒤 사용하세요. <b>자동 스크롤은 아직 지원하지 않습니다</b> — 패널 안에서 원하는 만큼 직접 스크롤해 리뷰를 먼저 불러온 다음, 그 상태에서 "지금 보이는 리뷰 수집"을 누르면 그 시점에 화면에 있는 리뷰만 모읍니다(여러 번 눌러서 계속 더 모을 수 있습니다 — 중복은 자동으로 걸러집니다).</div>
-  <button id="googleReviewCollectBtn">지금 보이는 리뷰 수집</button>
+  <div class="section-desc">구글 검색(google.com)에서 업체를 검색해 "리뷰" 패널이 화면에 열린 상태로 만든 뒤 사용하세요. <b>"리뷰 수집 시작"</b>을 누르면 패널을 자동으로 스크롤해가며 최대 500건을 모읍니다 — 패널의 스크롤 영역을 자동으로 찾아내는 방식이라 레이아웃에 따라 안 될 수 있습니다. 자동 스크롤이 안 먹히면 패널을 직접 스크롤한 뒤 아래 "지금 보이는 리뷰만 수집"을 대신 써주세요(여러 번 눌러서 계속 더 모을 수 있고, 중복은 자동으로 걸러집니다).</div>
+  <button id="googleReviewStartBtn">리뷰 수집 시작</button>
   <div class="row-buttons">
-    <button id="googleReviewClearBtn">전체 삭제</button>
+    <button id="googleReviewStopBtn">중지</button>
     <button id="googleReviewDownloadBtn">리뷰 CSV 다운로드</button>
+    <button id="googleReviewPhotosDownloadBtn">리뷰 사진 전체 다운로드</button>
+  </div>
+  <div class="row-buttons">
+    <button id="googleReviewCollectBtn">지금 보이는 리뷰만 수집 (수동)</button>
+    <button id="googleReviewClearBtn">전체 삭제</button>
   </div>
   <div id="googleReviewProgress" class="section-desc" style="margin-top:-2px;"></div>
+  <div id="googlePhotoDownloadProgress" class="section-desc" style="margin-top:-2px;"></div>
 
   <hr />
   <div class="section-title">네이버 플레이스 블로그 원고 도구 (베타)</div>

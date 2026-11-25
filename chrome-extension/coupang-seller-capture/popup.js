@@ -271,6 +271,11 @@ async function handleNaverReviewDownload() {
   }
 }
 
+// Display-only — must match GOOGLE_REVIEW_TARGET in background.js
+// (popup.js and background.js are separate script contexts, so this
+// can't just reference that constant directly).
+const GOOGLE_REVIEW_TARGET_HINT = 500;
+
 const GOOGLE_REVIEW_CSV_COLUMNS = [
   { key: "rating", header: "별점" },
   { key: "nickname", header: "작성자" },
@@ -294,16 +299,45 @@ function buildGoogleReviewCsv(reviews) {
   return [header, ...rows].join("\r\n");
 }
 
-// One-shot: unlike the Naver collectors, this has no background
-// loop/status to poll — one click reads whatever's currently rendered
-// and returns immediately, so the result is shown directly here.
+function isGoogleSearchTab(tab) {
+  return !!(tab && tab.url && /^https:\/\/(www\.google\.|maps\.google\.)/i.test(tab.url));
+}
+
+async function handleGoogleReviewStart() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !tab.id) {
+    setStatus("현재 탭을 확인할 수 없습니다.", "error");
+    return;
+  }
+  if (!isGoogleSearchTab(tab)) {
+    setStatus("구글 검색(google.com) 결과 페이지에서 사용해주세요.", "error");
+    return;
+  }
+  const response = await chrome.runtime.sendMessage({ type: "START_GOOGLE_REVIEW_COLLECTION", tabId: tab.id });
+  if (!response || !response.ok) {
+    setStatus(response && response.reason === "already_running" ? "이미 다른 수집 작업이 진행 중입니다." : "시작하지 못했습니다.", "error");
+    return;
+  }
+  renderGoogleReviewStatus();
+}
+
+async function handleGoogleReviewStop() {
+  await chrome.runtime.sendMessage({ type: "STOP_BATCH" });
+  setStatus("구글 리뷰 수집을 중지했습니다.", "ok");
+  renderGoogleReviewStatus();
+}
+
+// Manual fallback for when the auto-scroll (loadMoreGoogleReviews,
+// shared.js) doesn't find/scroll the right container on some layout:
+// unlike the loop above, this has no background status to poll — one
+// click reads whatever's currently rendered and returns immediately.
 async function handleGoogleReviewCollect() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab || !tab.id) {
     setStatus("현재 탭을 확인할 수 없습니다.", "error");
     return;
   }
-  if (!tab.url || !/^https:\/\/www\.google\./i.test(tab.url)) {
+  if (!isGoogleSearchTab(tab)) {
     setStatus("구글 검색(google.com) 결과 페이지에서 사용해주세요.", "error");
     return;
   }
@@ -320,6 +354,68 @@ async function handleGoogleReviewCollect() {
 async function handleGoogleReviewClear() {
   await chrome.storage.local.set({ googleReviews: [] });
   document.getElementById("googleReviewProgress").textContent = "초기화했습니다.";
+}
+
+async function handleGoogleReviewPhotosDownload() {
+  const { googleReviews } = await chrome.storage.local.get("googleReviews");
+  const reviews = Array.isArray(googleReviews) ? googleReviews : [];
+  const totalPhotos = reviews.reduce((sum, r) => sum + (Array.isArray(r.photoUrls) ? r.photoUrls.length : 0), 0);
+  if (totalPhotos === 0) {
+    setStatus("다운로드할 사진이 없습니다.", "error");
+    return;
+  }
+  const ok = window.confirm(
+    "수집되는 사진은 리뷰 작성자가 올린 것입니다. 참고용으로 내려받는 건 괜찮지만, 블로그·광고 등에 재사용하려면 저작권법상 원작성자의 허락이 필요할 수 있습니다. 계속할까요?"
+  );
+  if (!ok) return;
+  const response = await chrome.runtime.sendMessage({ type: "START_GOOGLE_PHOTO_DOWNLOAD", reviews });
+  if (!response || !response.ok) {
+    setStatus(response && response.reason === "already_running" ? "이미 다운로드가 진행 중입니다." : "다운로드를 시작하지 못했습니다.", "error");
+    return;
+  }
+  renderGooglePhotoDownloadStatus();
+}
+
+async function renderGoogleReviewStatus() {
+  const status = await chrome.runtime.sendMessage({ type: "GET_GOOGLE_REVIEW_STATUS" });
+  const el = document.getElementById("googleReviewProgress");
+  const startBtn = document.getElementById("googleReviewStartBtn");
+  if (!status || (!status.running && !status.total)) {
+    el.textContent = "";
+    if (startBtn) startBtn.disabled = !!(status && status.running);
+    return;
+  }
+  if (startBtn) startBtn.disabled = !!status.running;
+  if (status.running) {
+    el.innerHTML = status.phase ? `수집 중 — ${status.phase}` : `수집 중 — <b>${status.collected}</b> / ${GOOGLE_REVIEW_TARGET_HINT}건`;
+  } else if (status.error === "interrupted") {
+    el.textContent = `크롬이 확장프로그램을 잠시 재시작해 중단됐습니다 (${status.collected}건까지 저장됨). 필요하면 다시 시작해주세요.`;
+  } else if (status.error === "cancelled") {
+    el.textContent = `중지됨: ${status.collected}건까지 수집됨`;
+  } else if (status.error) {
+    el.textContent = `${status.error} (${status.collected}건 수집됨)`;
+  } else {
+    el.textContent = `완료: ${status.collected}건 수집됨 — 자동 스크롤이 일찍 멈췄다면 "지금 보이는 리뷰만 수집"으로 더 모아보세요.`;
+  }
+}
+
+async function renderGooglePhotoDownloadStatus() {
+  const status = await chrome.runtime.sendMessage({ type: "GET_GOOGLE_PHOTO_DOWNLOAD_STATUS" });
+  const el = document.getElementById("googlePhotoDownloadProgress");
+  if (!el) return;
+  if (!status || (!status.running && !status.total)) {
+    el.textContent = "";
+    return;
+  }
+  if (status.running) {
+    el.innerHTML = `사진 다운로드 중 — <b>${status.done}</b> / ${status.total}장${
+      status.failed ? ` (실패 ${status.failed}장)` : ""
+    }`;
+  } else if (status.error === "interrupted") {
+    el.textContent = `크롬이 확장프로그램을 잠시 재시작해 중단됐습니다 (${status.done}/${status.total}장까지 받음). 필요하면 다시 시작해주세요.`;
+  } else {
+    el.textContent = `사진 다운로드 완료: ${status.done - status.failed}장 (실패 ${status.failed}장)`;
+  }
 }
 
 async function handleGoogleReviewDownload() {
@@ -994,6 +1090,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   renderRepeatCycleStatus();
   renderPlaceReviewStatus();
   renderPlacePhotoDownloadStatus();
+  renderGoogleReviewStatus();
+  renderGooglePhotoDownloadStatus();
 
   if (batchStatus && batchStatus.running) {
     // The stored state says a batch is running; ping the background
@@ -1009,6 +1107,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (changes.repeatCycleState) renderRepeatCycleStatus();
     if (changes.placeReviewStatus) renderPlaceReviewStatus();
     if (changes.placePhotoDownloadStatus) renderPlacePhotoDownloadStatus();
+    if (changes.googleReviewStatus) renderGoogleReviewStatus();
+    if (changes.googlePhotoDownloadStatus) renderGooglePhotoDownloadStatus();
     if (changes.records) {
       renderList(Array.isArray(changes.records.newValue) ? changes.records.newValue : []);
       renderSheetSyncStatus();
@@ -1037,9 +1137,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("placeReviewStopBtn").addEventListener("click", handlePlaceReviewStop);
   document.getElementById("placeReviewDownloadBtn").addEventListener("click", handlePlaceReviewDownload);
   document.getElementById("placeReviewPhotosDownloadBtn").addEventListener("click", handlePlaceReviewPhotosDownload);
+  document.getElementById("googleReviewStartBtn").addEventListener("click", handleGoogleReviewStart);
+  document.getElementById("googleReviewStopBtn").addEventListener("click", handleGoogleReviewStop);
   document.getElementById("googleReviewCollectBtn").addEventListener("click", handleGoogleReviewCollect);
   document.getElementById("googleReviewClearBtn").addEventListener("click", handleGoogleReviewClear);
   document.getElementById("googleReviewDownloadBtn").addEventListener("click", handleGoogleReviewDownload);
+  document.getElementById("googleReviewPhotosDownloadBtn").addEventListener("click", handleGoogleReviewPhotosDownload);
   document.getElementById("openBlogWriterBtn").addEventListener("click", () => {
     chrome.tabs.create({ url: chrome.runtime.getURL("blog-writer.html") });
   });

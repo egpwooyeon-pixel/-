@@ -1328,16 +1328,19 @@ async function fetchImageInlineData(url) {
 }
 
 // --- 구글 리뷰(검색 결과 업체 패널) 수집 -------------------------
-// Deliberately simpler than the Naver collectors: a single pass that
-// extracts whatever review cards (extractVisibleGoogleReviews, in
-// shared.js) are already rendered in the page right now — no
-// sort-switching, no auto scroll/"more" loop. The review panel looked
-// like it has its own internal scroll area rather than scrolling the
-// whole page, and guessing that wrong was exactly the mistake that
-// cost a long debugging session for Smart Store — so for Google this
-// ships "collect what's visible" first (useful on its own: scroll the
-// panel yourself, then collect), and auto-paging gets added once
-// that's confirmed with real evidence instead of assumed.
+// collectGoogleReviews below is the original one-shot pass: extracts
+// whatever review cards (extractVisibleGoogleReviews, in shared.js)
+// are already rendered right now, no scrolling of its own. Kept as a
+// manual fallback alongside startGoogleReviewCollection (further
+// down), which drives loadMoreGoogleReviews (shared.js) to scroll the
+// panel automatically — that function auto-detects the review panel's
+// own scrollable ancestor at runtime rather than guessing Google's
+// class name for it, since the panel looked like its own internally-
+// scrolling column rather than scrolling the whole page. This is a
+// first attempt at that detection, not yet confirmed against real
+// usage the way the Naver collectors eventually were — if it stalls
+// early or never finds more, that auto-detection is the first thing
+// to revisit.
 //
 // Runs with allFrames: true since it isn't confirmed whether the
 // review panel is same-frame with the search page or an embedded
@@ -1396,6 +1399,151 @@ async function collectGoogleReviews(tabId) {
   const total = Array.isArray(googleReviews) ? googleReviews.length : 0;
 
   return { ok: true, found: pageReviews.length, added, total };
+}
+
+const GOOGLE_REVIEW_TARGET = 500;
+
+async function getGoogleReviewStatus() {
+  const { googleReviewStatus } = await chrome.storage.local.get("googleReviewStatus");
+  return googleReviewStatus || { running: false, phase: "", collected: 0, total: 0, error: "" };
+}
+
+async function setGoogleReviewStatus(patch) {
+  const current = await getGoogleReviewStatus();
+  await chrome.storage.local.set({ googleReviewStatus: { ...current, ...patch } });
+}
+
+// Same shared isRunning/cancelRequested flags as the Coupang batch,
+// Naver store, and Naver Place collectors above (only one automated
+// run at a time; "중지" sends STOP_BATCH, same as the others), and the
+// same "retry several times before concluding the list really stopped
+// growing" shape that fixed the Smart Store collector's premature
+// stop earlier this session — a single stall here isn't trusted as
+// "no more reviews" either.
+async function startGoogleReviewCollection(tabId) {
+  isRunning = true;
+  cancelRequested = false;
+  stopReason = "";
+
+  let pageUrl = "";
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    pageUrl = tab.url || "";
+  } catch (err) {
+    // ignore; pageUrl stays blank
+  }
+
+  await setGoogleReviewStatus({ running: true, phase: "수집 중", collected: 0, total: 0, error: "", startedAt: Date.now() });
+
+  let collected = 0;
+  let pageCount = 0;
+  const MAX_PAGES = 120;
+
+  while (collected < GOOGLE_REVIEW_TARGET && pageCount < MAX_PAGES && !cancelRequested) {
+    let pageReviews = [];
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        func: extractVisibleGoogleReviews,
+      });
+      const frameArrays = (results || []).map((r) => (Array.isArray(r && r.result) ? r.result : [])).filter((arr) => arr.length > 0);
+      pageReviews = frameArrays.reduce((best, arr) => (arr.length > best.length ? arr : best), frameArrays[0] || []);
+    } catch (err) {
+      break;
+    }
+
+    const tagged = pageReviews.map((r) => ({ ...r, pageUrl, capturedAt: formatDateTime(new Date()) }));
+    const added = await appendGoogleReviews(tagged);
+    collected += added;
+
+    const status = await getGoogleReviewStatus();
+    await setGoogleReviewStatus({ collected, total: status.total + added });
+
+    if (collected >= GOOGLE_REVIEW_TARGET || cancelRequested) break;
+
+    let hasNext = false;
+    let consecutiveNoGrowth = 0;
+    const MAX_CONSECUTIVE_NO_GROWTH = 5;
+    while (!hasNext && consecutiveNoGrowth < MAX_CONSECUTIVE_NO_GROWTH && !cancelRequested) {
+      try {
+        const nextResults = await chrome.scripting.executeScript({
+          target: { tabId, allFrames: true },
+          func: loadMoreGoogleReviews,
+        });
+        const frameResults = (nextResults || []).map((r) => r && r.result).filter(Boolean);
+        hasNext = frameResults.some((r) => r.ok);
+      } catch (err) {
+        hasNext = false;
+      }
+      if (hasNext) break;
+      consecutiveNoGrowth++;
+      if (consecutiveNoGrowth < MAX_CONSECUTIVE_NO_GROWTH) {
+        await setGoogleReviewStatus({ phase: `더 불러오는 중 — 재시도 ${consecutiveNoGrowth}/${MAX_CONSECUTIVE_NO_GROWTH - 1}` });
+        await delay(4000);
+      }
+    }
+    await setGoogleReviewStatus({ phase: "수집 중" });
+    if (!hasNext) break;
+
+    pageCount++;
+    await delayWithJitter(2500);
+  }
+
+  isRunning = false;
+  await setGoogleReviewStatus({ running: false, error: cancelRequested ? "cancelled" : "" });
+}
+
+// Mirrors startPlacePhotoDownload above (same reason: a sequential
+// download loop has to live in the service worker, not popup.js, since
+// the popup's script is torn down the moment it loses focus).
+let googlePhotoDownloadRunning = false;
+
+async function getGooglePhotoDownloadStatus() {
+  const { googlePhotoDownloadStatus } = await chrome.storage.local.get("googlePhotoDownloadStatus");
+  return googlePhotoDownloadStatus || { running: false, total: 0, done: 0, failed: 0, error: "" };
+}
+
+async function setGooglePhotoDownloadStatus(patch) {
+  const current = await getGooglePhotoDownloadStatus();
+  await chrome.storage.local.set({ googlePhotoDownloadStatus: { ...current, ...patch } });
+}
+
+async function startGooglePhotoDownload(reviews) {
+  if (googlePhotoDownloadRunning) return { ok: false, reason: "already_running" };
+
+  const jobs = [];
+  (reviews || []).forEach((r, reviewIndex) => {
+    const urls = Array.isArray(r.photoUrls) ? r.photoUrls : [];
+    urls.forEach((url, photoIndex) => {
+      jobs.push({ url, reviewIndex, photoIndex, nickname: r.nickname });
+    });
+  });
+  if (jobs.length === 0) return { ok: false, reason: "no_photos" };
+
+  googlePhotoDownloadRunning = true;
+  await setGooglePhotoDownloadStatus({ running: true, total: jobs.length, done: 0, failed: 0, error: "" });
+
+  let done = 0;
+  let failed = 0;
+
+  for (const job of jobs) {
+    const filename = `구글리뷰사진/${String(job.reviewIndex + 1).padStart(3, "0")}_${sanitizeForFilename(job.nickname) || "익명"}_${
+      job.photoIndex + 1
+    }.jpg`;
+
+    try {
+      await chrome.downloads.download({ url: job.url, filename, saveAs: false });
+    } catch (err) {
+      failed++;
+    }
+    done++;
+    await setGooglePhotoDownloadStatus({ done, failed });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+
+  googlePhotoDownloadRunning = false;
+  await setGooglePhotoDownloadStatus({ running: false, done, failed });
+  return { ok: true, total: jobs.length, failed };
 }
 
 // photoSlots (optional) is an ordered list the caller already picked
@@ -2199,6 +2347,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     collectGoogleReviews(message.tabId).then(sendResponse);
     return true;
   }
+  if (message && message.type === "START_GOOGLE_REVIEW_COLLECTION" && message.tabId) {
+    if (isRunning || repeatCycleRunning) {
+      sendResponse({ ok: false, reason: "already_running" });
+      return false;
+    }
+    startGoogleReviewCollection(message.tabId);
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (message && message.type === "GET_GOOGLE_REVIEW_STATUS") {
+    getGoogleReviewStatus().then(sendResponse);
+    return true;
+  }
+  if (message && message.type === "START_GOOGLE_PHOTO_DOWNLOAD" && Array.isArray(message.reviews)) {
+    startGooglePhotoDownload(message.reviews).then(sendResponse);
+    return true;
+  }
+  if (message && message.type === "GET_GOOGLE_PHOTO_DOWNLOAD_STATUS") {
+    getGooglePhotoDownloadStatus().then(sendResponse);
+    return true;
+  }
   if (message && message.type === "START_PLACE_PHOTO_DOWNLOAD" && Array.isArray(message.reviews)) {
     startPlacePhotoDownload(message.reviews).then(sendResponse);
     return true;
@@ -2299,6 +2468,14 @@ chrome.commands.onCommand.addListener(async (command) => {
   const photoDownloadStatus = await getPlacePhotoDownloadStatus();
   if (photoDownloadStatus.running && !placePhotoDownloadRunning) {
     await setPlacePhotoDownloadStatus({ running: false, error: "interrupted" });
+  }
+  const googleStatus = await getGoogleReviewStatus();
+  if (googleStatus.running && !isRunning) {
+    await setGoogleReviewStatus({ running: false, error: "interrupted" });
+  }
+  const googlePhotoStatus = await getGooglePhotoDownloadStatus();
+  if (googlePhotoStatus.running && !googlePhotoDownloadRunning) {
+    await setGooglePhotoDownloadStatus({ running: false, error: "interrupted" });
   }
   // Unlike the two above, an active repeat cycle isn't marked
   // "interrupted" here — its REPEAT_CYCLE_ALARM_NAME alarm survives this
