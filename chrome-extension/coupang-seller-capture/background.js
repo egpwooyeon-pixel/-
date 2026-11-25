@@ -1327,6 +1327,77 @@ async function fetchImageInlineData(url) {
   return { mimeType: blob.type || "image/jpeg", data: btoa(binary) };
 }
 
+// --- 구글 리뷰(검색 결과 업체 패널) 수집 -------------------------
+// Deliberately simpler than the Naver collectors: a single pass that
+// extracts whatever review cards (extractVisibleGoogleReviews, in
+// shared.js) are already rendered in the page right now — no
+// sort-switching, no auto scroll/"more" loop. The review panel looked
+// like it has its own internal scroll area rather than scrolling the
+// whole page, and guessing that wrong was exactly the mistake that
+// cost a long debugging session for Smart Store — so for Google this
+// ships "collect what's visible" first (useful on its own: scroll the
+// panel yourself, then collect), and auto-paging gets added once
+// that's confirmed with real evidence instead of assumed.
+//
+// Runs with allFrames: true since it isn't confirmed whether the
+// review panel is same-frame with the search page or an embedded
+// cross-origin frame; each frame's result is collected and the one
+// with the most reviews wins (empty/irrelevant frames are harmless) —
+// same reasoning as the Naver Place collector's frame handling.
+function googleReviewDedupeKey(review) {
+  if (review.reviewId) return "id:" + review.reviewId;
+  return [review.nickname, review.date, (review.body || "").slice(0, 40)].join("|");
+}
+
+async function appendGoogleReviews(newReviews) {
+  const { googleReviews } = await chrome.storage.local.get("googleReviews");
+  const list = Array.isArray(googleReviews) ? googleReviews : [];
+  const seen = new Set(list.map(googleReviewDedupeKey));
+  let added = 0;
+  newReviews.forEach((r) => {
+    const key = googleReviewDedupeKey(r);
+    if (seen.has(key)) return;
+    seen.add(key);
+    list.push(r);
+    added++;
+  });
+  await chrome.storage.local.set({ googleReviews: list });
+  return added;
+}
+
+async function collectGoogleReviews(tabId) {
+  let pageUrl = "";
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    pageUrl = tab.url || "";
+  } catch (err) {
+    // ignore; pageUrl stays blank
+  }
+
+  let results;
+  try {
+    results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: extractVisibleGoogleReviews,
+    });
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || "리뷰 패널을 찾지 못했습니다." };
+  }
+
+  const frameArrays = (results || []).map((r) => (Array.isArray(r && r.result) ? r.result : [])).filter((arr) => arr.length > 0);
+  if (frameArrays.length === 0) {
+    return { ok: false, error: '리뷰 카드를 찾지 못했습니다 — "리뷰" 패널이 화면에 열려있는 상태인지 확인해주세요.' };
+  }
+  const pageReviews = frameArrays.reduce((best, arr) => (arr.length > best.length ? arr : best), frameArrays[0]);
+
+  const tagged = pageReviews.map((r) => ({ ...r, pageUrl, capturedAt: formatDateTime(new Date()) }));
+  const added = await appendGoogleReviews(tagged);
+  const { googleReviews } = await chrome.storage.local.get("googleReviews");
+  const total = Array.isArray(googleReviews) ? googleReviews.length : 0;
+
+  return { ok: true, found: pageReviews.length, added, total };
+}
+
 // photoSlots (optional) is an ordered list the caller already picked
 // from the collected reviews' real photoUrls. First version of this
 // only told Gemini which review each slot came from (text only) and
@@ -2122,6 +2193,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message && message.type === "GET_PLACE_REVIEW_STATUS") {
     getPlaceReviewStatus().then(sendResponse);
+    return true;
+  }
+  if (message && message.type === "COLLECT_GOOGLE_REVIEWS" && message.tabId) {
+    collectGoogleReviews(message.tabId).then(sendResponse);
     return true;
   }
   if (message && message.type === "START_PLACE_PHOTO_DOWNLOAD" && Array.isArray(message.reviews)) {

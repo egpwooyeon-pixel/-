@@ -1033,3 +1033,66 @@ function startGmailAutoSendCountdown(countdownSeconds) {
     }
   }
 }
+
+// --- 구글 리뷰(검색 결과 내 업체 패널) 수집 --------------------------
+// Built from one real review card's outerHTML the user pasted (from
+// the "리뷰" side panel that opens inside a www.google.com search
+// results page, not maps.google.com) — card wrapper div.bwb7ce[data-id],
+// name div.rhtdWc, reviewer meta (지역가이드·리뷰수·사진수) div.YE6B9b,
+// profile link a.yC3ZMb, star rating as 5 small svgs under div.h3PQJ
+// (filled = fill="#fabb05", empty = fill="#dadce0" — count filled
+// ones), relative date span.y3Ibjb .m6Mr5d, body div.d83Iyc, photos as
+// <img src> inside div[role="listitem"].uYPdrf within the card's
+// g-scrolling-carousel (full URLs already in src — no lazyload timing
+// issue like Naver Place had). data-id on the card doubles as a
+// stable unique review id.
+//
+// Unlike the Naver collectors, this ONLY reads whatever review cards
+// are already in the DOM right now — no scroll/"more" automation yet.
+// The review panel looked like its own internally-scrollable column
+// (not the whole page), so guessing a scroll strategy here risked
+// repeating the exact mistake this project just spent a long session
+// fixing for Smart Store. Scroll the review panel yourself first to
+// load as many as you want, then collect.
+//
+// Google's class names (bwb7ce, d83Iyc, rhtdWc, ...) are short
+// machine-generated identifiers with no semantic meaning (unlike
+// Naver's deliberately-named data-shp-* attributes), so they're more
+// likely to change in a future Google update than the Naver selectors
+// were — if collection stops finding cards after a Google UI change,
+// this is the first place to re-verify with fresh outerHTML.
+function extractVisibleGoogleReviews() {
+  const norm = (el) => (el && el.textContent ? el.textContent.trim() : "");
+  const cards = Array.from(document.querySelectorAll("div.bwb7ce[data-id]"));
+
+  return cards.map((card) => {
+    const reviewId = card.getAttribute("data-id") || "";
+    const nickname = norm(card.querySelector(".rhtdWc"));
+    const reviewerMeta = norm(card.querySelector(".YE6B9b"));
+    const profileEl = card.querySelector("a.yC3ZMb");
+    const profileUrl = profileEl ? profileEl.getAttribute("href") || "" : "";
+
+    const starEls = Array.from(card.querySelectorAll(".h3PQJ svg"));
+    const filledStars = starEls.filter((svg) => (svg.getAttribute("fill") || "").toLowerCase() === "#fabb05").length;
+    const rating = starEls.length > 0 ? filledStars : "";
+
+    const date = norm(card.querySelector(".y3Ibjb .m6Mr5d"));
+    const body = norm(card.querySelector(".d83Iyc"));
+
+    const photoUrls = Array.from(card.querySelectorAll('div[role="listitem"].uYPdrf img[src]'))
+      .map((img) => img.getAttribute("src") || "")
+      .filter(Boolean);
+
+    return {
+      reviewId,
+      nickname,
+      reviewerMeta,
+      profileUrl,
+      rating,
+      date,
+      body,
+      photoCount: photoUrls.length,
+      photoUrls,
+    };
+  });
+}

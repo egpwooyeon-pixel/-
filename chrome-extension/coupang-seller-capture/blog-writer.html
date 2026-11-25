@@ -196,11 +196,12 @@
   <div class="card">
     <h2>3. 리뷰 붙여넣기</h2>
     <div class="file-hint">
-      팝업의 "네이버 플레이스 영수증리뷰 수집" 또는 "네이버 스토어 리뷰 수집"으로 먼저 리뷰를 모았다면 아래 버튼으로 바로 불러올 수 있습니다. 직접 복사해서 붙여넣어도 됩니다 — 한 줄에 리뷰 하나씩, 10~30개 정도면 충분합니다.
+      팝업의 "네이버 플레이스 영수증리뷰 수집", "네이버 스토어 리뷰 수집", "구글 리뷰 수집"으로 먼저 리뷰를 모았다면 아래 버튼으로 바로 불러올 수 있습니다. 직접 복사해서 붙여넣어도 됩니다 — 한 줄에 리뷰 하나씩, 10~30개 정도면 충분합니다.
     </div>
-    <div class="row2" style="margin-bottom:0;">
+    <div class="row2" style="margin-bottom:0;flex-wrap:wrap;">
       <button id="loadCollectedBtn" type="button">수집한 플레이스 리뷰 불러오기</button>
       <button id="loadNaverStoreBtn" type="button">수집한 스마트스토어 리뷰 불러오기</button>
+      <button id="loadGoogleReviewsBtn" type="button">수집한 구글 리뷰 불러오기</button>
     </div>
     <div id="loadCollectedStatus" class="file-hint" style="margin-top:4px;"></div>
     <textarea id="reviewsInput" rows="10" placeholder="분위기도 정말 좋고 친절하시고 메뉴 하나하나 설명도 잘해주시고 분위기는...&#10;돈까스인데 워낙 부드러워서 물리지 않고 잘 먹었던 것 같아요&#10;(한 줄에 리뷰 하나씩)" style="margin-top:8px;"></textarea>

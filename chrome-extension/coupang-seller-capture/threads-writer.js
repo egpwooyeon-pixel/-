@@ -151,6 +151,32 @@ async function handleLoadNaverStoreReviews() {
   updatePoolStats();
 }
 
+// Mirrors handleLoadNaverStoreReviews above for the Google review pool.
+async function handleLoadGoogleReviews() {
+  const { googleReviews } = await chrome.storage.local.get("googleReviews");
+  const reviews = Array.isArray(googleReviews) ? googleReviews : [];
+  const statusEl = document.getElementById("loadCollectedStatus");
+  if (reviews.length === 0) {
+    statusEl.textContent = "수집된 구글 리뷰가 없습니다 — 먼저 확장프로그램 팝업에서 리뷰 수집을 실행하세요.";
+    document.getElementById("poolStats").classList.add("hidden");
+    return;
+  }
+  const normalized = reviews.map((r) => ({
+    nickname: r.nickname || "",
+    body: r.body || "",
+    rating: r.rating || "",
+    keywordTags: "",
+    option: "",
+    placeName: "",
+    photoUrls: Array.isArray(r.photoUrls) ? r.photoUrls : [],
+  }));
+  lastLoadedReviews = normalized;
+
+  const photoCount = countTotalPhotos(normalized);
+  statusEl.textContent = `${normalized.length}건을 불러왔습니다 (사진 ${photoCount}장 포함) — 상호명은 자동으로 못 채우니 직접 입력하세요.`;
+  updatePoolStats();
+}
+
 // Builds up to `maxPosts` posts, each exactly `photosPerPost` photos —
 // and, deliberately, each post's photos all come from the SAME single
 // review. An earlier version pooled every review's photos together
@@ -508,6 +534,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("saveApiKeyBtn").addEventListener("click", saveApiKey);
   document.getElementById("loadCollectedBtn").addEventListener("click", handleLoadCollected);
   document.getElementById("loadNaverStoreBtn").addEventListener("click", handleLoadNaverStoreReviews);
+  document.getElementById("loadGoogleReviewsBtn").addEventListener("click", handleLoadGoogleReviews);
   document.getElementById("photosPerPostInput").addEventListener("input", updatePoolStats);
   document.getElementById("generateBtn").addEventListener("click", handleGenerate);
   document.getElementById("downloadAllZipBtn").addEventListener("click", handleDownloadAllZip);

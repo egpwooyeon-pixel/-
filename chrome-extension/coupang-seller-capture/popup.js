@@ -271,6 +271,79 @@ async function handleNaverReviewDownload() {
   }
 }
 
+const GOOGLE_REVIEW_CSV_COLUMNS = [
+  { key: "rating", header: "별점" },
+  { key: "nickname", header: "작성자" },
+  { key: "reviewerMeta", header: "작성자정보" },
+  { key: "date", header: "작성일(상대)" },
+  { key: "body", header: "리뷰내용" },
+  { key: "photoCount", header: "첨부사진수" },
+  { key: "photoUrlsJoined", header: "사진URL" },
+  { key: "reviewId", header: "리뷰ID" },
+  { key: "profileUrl", header: "작성자프로필" },
+  { key: "pageUrl", header: "검색페이지 URL" },
+  { key: "capturedAt", header: "캡처일시" },
+];
+
+function buildGoogleReviewCsv(reviews) {
+  const header = GOOGLE_REVIEW_CSV_COLUMNS.map((c) => csvEscape(c.header)).join(",");
+  const rows = reviews.map((r) => {
+    const row = { ...r, photoUrlsJoined: (Array.isArray(r.photoUrls) ? r.photoUrls : []).join(" | ") };
+    return GOOGLE_REVIEW_CSV_COLUMNS.map((c) => csvEscape(row[c.key])).join(",");
+  });
+  return [header, ...rows].join("\r\n");
+}
+
+// One-shot: unlike the Naver collectors, this has no background
+// loop/status to poll — one click reads whatever's currently rendered
+// and returns immediately, so the result is shown directly here.
+async function handleGoogleReviewCollect() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !tab.id) {
+    setStatus("현재 탭을 확인할 수 없습니다.", "error");
+    return;
+  }
+  if (!tab.url || !/^https:\/\/www\.google\./i.test(tab.url)) {
+    setStatus("구글 검색(google.com) 결과 페이지에서 사용해주세요.", "error");
+    return;
+  }
+  const el = document.getElementById("googleReviewProgress");
+  el.textContent = "수집 중...";
+  const response = await chrome.runtime.sendMessage({ type: "COLLECT_GOOGLE_REVIEWS", tabId: tab.id });
+  if (!response || !response.ok) {
+    el.textContent = (response && response.error) || "수집에 실패했습니다.";
+    return;
+  }
+  el.textContent = `이번에 ${response.found}건 발견, 새로 ${response.added}건 추가됨 (누적 ${response.total}건)`;
+}
+
+async function handleGoogleReviewClear() {
+  await chrome.storage.local.set({ googleReviews: [] });
+  document.getElementById("googleReviewProgress").textContent = "초기화했습니다.";
+}
+
+async function handleGoogleReviewDownload() {
+  const { googleReviews } = await chrome.storage.local.get("googleReviews");
+  const reviews = Array.isArray(googleReviews) ? googleReviews : [];
+  if (reviews.length === 0) {
+    setStatus("수집된 구글 리뷰가 없습니다.", "error");
+    return;
+  }
+  const csv = "﻿" + buildGoogleReviewCsv(reviews);
+  const base64 = toBase64Utf8(csv);
+  const dateStr = formatDateTime(new Date()).replace(/[:\s]/g, "-");
+  try {
+    await chrome.downloads.download({
+      url: `data:text/csv;charset=utf-8;base64,${base64}`,
+      filename: `google_reviews_${dateStr}.csv`,
+      saveAs: true,
+    });
+    setStatus("리뷰 CSV 다운로드를 시작했습니다.", "ok");
+  } catch (err) {
+    setStatus("다운로드에 실패했습니다.", "error");
+  }
+}
+
 async function renderNaverReviewStatus() {
   const status = await chrome.runtime.sendMessage({ type: "GET_NAVER_REVIEW_STATUS" });
   const el = document.getElementById("naverReviewProgress");
@@ -964,6 +1037,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("placeReviewStopBtn").addEventListener("click", handlePlaceReviewStop);
   document.getElementById("placeReviewDownloadBtn").addEventListener("click", handlePlaceReviewDownload);
   document.getElementById("placeReviewPhotosDownloadBtn").addEventListener("click", handlePlaceReviewPhotosDownload);
+  document.getElementById("googleReviewCollectBtn").addEventListener("click", handleGoogleReviewCollect);
+  document.getElementById("googleReviewClearBtn").addEventListener("click", handleGoogleReviewClear);
+  document.getElementById("googleReviewDownloadBtn").addEventListener("click", handleGoogleReviewDownload);
   document.getElementById("openBlogWriterBtn").addEventListener("click", () => {
     chrome.tabs.create({ url: chrome.runtime.getURL("blog-writer.html") });
   });
